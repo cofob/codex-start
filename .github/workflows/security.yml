@@ -17,14 +17,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-audit
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo audit --deny warnings
       - run: cargo deny check advisories licenses bans sources
-      - uses: google/osv-scanner-action/osv-scanner-action@v2.0.2
+      - uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
         with:
           scan-args: |-
             --lockfile=Cargo.lock
@@ -37,8 +37,8 @@ jobs:
       security-events: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: ossf/scorecard-action@v2.4.0
+      - uses: actions/checkout@v7
+      - uses: ossf/scorecard-action@v2.4.3
         if: github.event.repository.private == false
         with:
           results_file: scorecard.sarif
