@@ -29,12 +29,13 @@ jobs:
           scan-args: |-
             --lockfile=Cargo.lock
       - uses: ossf/scorecard-action@v2.4.0
+        if: github.event.repository.private == false
         with:
           results_file: scorecard.sarif
           results_format: sarif
           publish_results: true
-      - uses: github/codeql-action/upload-sarif@v3
-        if: always() && hashFiles('scorecard.sarif') != ''
+      - uses: github/codeql-action/upload-sarif@v4
+        if: always() && github.event.repository.private == false && hashFiles('scorecard.sarif') != ''
         with:
           sarif_file: scorecard.sarif
           category: scorecard
