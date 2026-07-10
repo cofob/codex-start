@@ -38,7 +38,7 @@ jobs:
             cross: false
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
       - name: Derive release metadata from the tag commit
@@ -65,7 +65,7 @@ jobs:
       - uses: taiki-e/install-action@cross
         if: matrix.cross
       - uses: anchore/sbom-action/download-syft@v0
-      - uses: sigstore/cosign-installer@v3.8.1
+      - uses: sigstore/cosign-installer@v4.1.2
       - name: Build
         shell: bash
         run: |
@@ -93,14 +93,14 @@ jobs:
           cosign sign-blob --yes --bundle "${archive}.tar.gz.bundle" "${archive}.tar.gz"
           echo "archive=${archive}" >>"$GITHUB_OUTPUT"
       - name: Attest binary archive provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ steps.package.outputs.archive }}.tar.gz
       - name: Attest SBOM provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ steps.package.outputs.archive }}.spdx.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.package.outputs.archive }}
           path: |
@@ -114,12 +114,12 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: sigstore/cosign-installer@v3.8.1
-      - uses: actions/download-artifact@v4
+      - uses: sigstore/cosign-installer@v4.1.2
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: codex-start-*
@@ -129,7 +129,7 @@ jobs:
           cargo run --quiet --locked --package xtask -- release-checksums dist --output dist/SHA256SUMS
           cosign sign-blob --yes --bundle dist/SHA256SUMS.bundle dist/SHA256SUMS
           cargo run --quiet --locked --package xtask -- verify-checksums dist/SHA256SUMS --base dist
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
