@@ -480,7 +480,7 @@ jobs:
             (
               cd "${projects}/${environment}"
               "${launcher}" --config "${config}" run "${environment}" \
-                --network "${network}" --no-worktree --no-tty -- --version
+                --network "${network}" --no-worktree --no-tty --ephemeral -- --version
             )
           done
       - name: Verify piped stdin, secret injection, and dry-run redaction
@@ -525,19 +525,19 @@ jobs:
             (
               cd "${project}"
               "${launcher}" --config "${config}" run generic \
-                --network offline --no-worktree --no-tty -- "${surface}" --help >/dev/null
+                --network offline --no-worktree --no-tty --ephemeral -- "${surface}" --help >/dev/null
             )
           done
           (
             cd "${project}"
             "${launcher}" --config "${config}" run generic \
-              --network offline --no-worktree --no-tty -- \
+              --network offline --no-worktree --no-tty --ephemeral -- \
               --profile smoke --version >/dev/null
             "${launcher}" --config "${config}" run generic \
-              --network offline --no-worktree --no-tty -- \
+              --network offline --no-worktree --no-tty --ephemeral -- \
               features list >/dev/null
             "${launcher}" --config "${config}" run generic \
-              --network offline --no-worktree --no-tty -- \
+              --network offline --no-worktree --no-tty --ephemeral -- \
               -c 'mcp_servers."ci.server".command="printf"' \
               -c 'mcp_servers."ci.server".args=[""]' mcp get ci.server >/dev/null
             "${launcher}" --config "${config}" shell generic \
@@ -547,11 +547,11 @@ jobs:
               CODEX_START__FORWARDING__HOST_SSH=true \
               CODEX_START__FORWARDING__LOCAL_PROVIDERS=true \
               "${launcher}" --config "${config}" run generic \
-                --network allowlist --no-worktree --no-tty -- \
+                --network allowlist --no-worktree --no-tty --ephemeral -- \
                 --oss --local-provider ollama --version >/dev/null
             HOME="${RUNNER_TEMP}/codex-start-e2e/host-home" \
               "${launcher}" --config "${config}" run generic \
-                --home host-ci --network offline --no-worktree --no-tty -- --version >/dev/null
+                --home host-ci --network offline --no-worktree --no-tty --ephemeral -- --version >/dev/null
 
             set +e
             exact_output="$("${launcher}" --config "${config}" shell generic \
@@ -580,10 +580,10 @@ jobs:
           (
             cd "${repository}"
             "${launcher}" --config "${config}" run generic \
-              --network bridge --worktree --name clean-ci --no-tty -- --version
+              --network bridge --worktree --name clean-ci --no-tty --ephemeral -- --version
             test "$(git worktree list --porcelain | grep --count '^worktree ')" -eq 1
             "${launcher}" --config "${config}" run generic \
-              --network host --no-worktree --no-tty -- --version
+              --network host --no-worktree --no-tty --ephemeral -- --version
           )
       - name: Verify signal propagation and cleanup
         shell: bash
