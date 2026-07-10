@@ -1442,15 +1442,37 @@ fn prepare_runtime_run(
         &launch.project_id,
         &session_name,
     );
-    if runtime.container_state(&run_name)? == Some(true) && kind == RunKind::Shell {
-        require_compatible_workload(&runtime, &run_name, launch)?;
-        let status = runtime.exec(
-            &run_name,
-            Some(&container_workdir),
-            &args.codex_args,
-            tty_enabled(launch.config.tty),
-        )?;
-        return Ok(RuntimeRunOutcome::Attached(status));
+    if kind == RunKind::Shell {
+        match runtime.container_state(&run_name)? {
+            Some(true) => {
+                require_compatible_workload(&runtime, &run_name, launch)?;
+                let status = runtime.exec(
+                    &run_name,
+                    Some(&container_workdir),
+                    &args.codex_args,
+                    tty_enabled(launch.config.tty),
+                )?;
+                return Ok(RuntimeRunOutcome::Attached(status));
+            }
+            Some(false) => {
+                require_compatible_workload(&runtime, &run_name, launch)?;
+                if !crate::session::restart_stopped_for_container(
+                    context,
+                    &launch.project_id,
+                    &run_name,
+                )? {
+                    runtime.start_container(&run_name)?;
+                }
+                let status = runtime.exec(
+                    &run_name,
+                    Some(&container_workdir),
+                    &args.codex_args,
+                    tty_enabled(launch.config.tty),
+                )?;
+                return Ok(RuntimeRunOutcome::Attached(status));
+            }
+            None => {}
+        }
     }
     let run_lock = RunLock::acquire(&context.paths.runtime_dir(), &run_name)?;
     remove_stale_workload(&runtime, &run_name, &launch.project_id)?;
@@ -3035,11 +3057,21 @@ fn execute_resources(
             )?;
             Ok(0)
         }
-        ResourcesCommand::Cleanup { force } => cleanup_resources(&runtime, force, output),
+        ResourcesCommand::Cleanup { force } => cleanup_resources(context, &runtime, force, output),
     }
 }
 
-fn cleanup_resources(runtime: &Runtime, force: bool, output: OutputFormat) -> Result<u8> {
+fn cleanup_resources(
+    context: &ConfigContext,
+    runtime: &Runtime,
+    force: bool,
+    output: OutputFormat,
+) -> Result<u8> {
+    let sessions_removed = if force {
+        crate::session::remove_all_for_runtime(context, runtime.kind())?
+    } else {
+        0
+    };
     let containers = runtime.list_containers(&format!("{MANAGED_LABEL}=true"), true)?;
     let mut removed_containers = 0;
     let mut running_skipped = 0;
@@ -3080,13 +3112,14 @@ fn cleanup_resources(runtime: &Runtime, force: bool, output: OutputFormat) -> Re
         &serde_json::json!({
             "containers_removed": removed_containers,
             "running_skipped": running_skipped,
+            "sessions_removed": sessions_removed,
             "session_resources_skipped": sessions_skipped,
             "networks_removed": removed_networks,
             "volumes_removed": removed_volumes,
             "unowned_volumes_skipped": unowned_volumes_skipped
         }),
         &format!(
-            "removed {removed_containers} containers, {removed_networks} networks, and {removed_volumes} ephemeral volumes; skipped {running_skipped} running containers, {sessions_skipped} session resources, and {unowned_volumes_skipped} unowned volumes"
+            "removed {removed_containers} containers, {removed_networks} networks, {removed_volumes} ephemeral volumes, and {sessions_removed} sessions; skipped {running_skipped} running containers, {sessions_skipped} session resources, and {unowned_volumes_skipped} unowned volumes"
         ),
     )?;
     Ok(0)

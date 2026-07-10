@@ -79,6 +79,7 @@ codex-start session attach SESSION
 codex-start session logs SESSION --follow
 codex-start session refresh SESSION
 codex-start session stop SESSION
+codex-start session cleanup --force
 codex-start session recovery enable
 ```
 
@@ -88,9 +89,11 @@ Run bare `codex-start session` or `codex-start worktree` in a terminal to open t
 
 Persistent sessions force the authenticated SSH-agent relay so `session attach` and `session refresh` can retarget new connections to the caller's current `SSH_AUTH_SOCK`. The container-side socket remains stable. Normal TUI exit prompts to detach or stop; terminal loss detaches implicitly.
 
+`codex-start shell --name NAME` attaches to the named workload when it is running. If its interactive session was stopped, it restores the session's workload and sidecars first; if the workload no longer exists, it creates a new one.
+
 Cross-reboot recovery is opt-in. `session recovery enable` installs a user launchd service on macOS or systemd user service on Linux. It waits for the configured Docker or Podman engine rather than starting the engine itself, then reconciles interactive containers. Rootless Podman therefore requires an active user systemd instance. This first implementation restores the container/app-server path; recreating host-side SSH, browser, OAuth, and declared-service listeners after a full host reboot is still pending. SSH-agent retargeting works while the detached session supervisor survives (including terminal loss and explicit stop/restart).
 
-`worktree cleanup` refuses dirty managed worktrees and deletes only merged owned branches; add `--force` to remove dirty worktrees and unmerged owned branches. `resources cleanup` removes stopped/stale owned resources and reports running workloads as skipped; add `--force` to stop and remove running workloads too.
+`worktree cleanup` refuses dirty managed worktrees and deletes only merged owned branches; add `--force` to remove dirty worktrees and unmerged owned branches. `resources cleanup` removes stopped/stale owned resources and reports running workloads and persistent sessions as skipped; add `--force` to stop, remove, and unregister all of them for the selected runtime.
 
 `merge` requires a clean, attached current branch and clean named source worktrees. Each source first resolves as an exact local branch and otherwise as a codex-start-managed worktree name. Codex merges sources in argument order, resolves conflicts, repairs integration failures, runs relevant checks, and must leave committed clean history. Failed or blocked runs preserve the repository for inspection; codex-start never resets or aborts it automatically.
 

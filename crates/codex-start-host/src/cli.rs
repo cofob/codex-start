@@ -366,7 +366,7 @@ pub enum ResourcesCommand {
     },
     /// Remove stopped/stale owned containers and networks.
     Cleanup {
-        /// Also stop and remove running workloads.
+        /// Also stop and remove running workloads, including persistent sessions.
         #[arg(long)]
         force: bool,
     },
@@ -492,6 +492,15 @@ pub enum SessionCommand {
         #[command(flatten)]
         selection: SessionSelection,
         /// Stop a running session before removal.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove stopped sessions for the current project.
+    Cleanup {
+        /// Include sessions belonging to other projects.
+        #[arg(long)]
+        all: bool,
+        /// Also stop and remove running sessions.
         #[arg(long)]
         force: bool,
     },
@@ -813,6 +822,15 @@ mod tests {
             start.command,
             Some(Command::Session(args))
                 if matches!(&args.command, Some(SessionCommand::Start(run)) if run.codex_args == ["exec", "task"])
+        ));
+
+        let cleanup =
+            Cli::try_parse_from(["codex-start", "session", "cleanup", "--all", "--force"])
+                .expect("session cleanup");
+        assert!(matches!(
+            cleanup.command,
+            Some(Command::Session(args))
+                if matches!(args.command, Some(SessionCommand::Cleanup { all: true, force: true }))
         ));
     }
 

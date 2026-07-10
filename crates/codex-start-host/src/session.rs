@@ -387,6 +387,7 @@ pub fn execute(
             let record = selected(&store, &selection, &project_id)?;
             remove(&store, &record, force, output)
         }
+        SessionCommand::Cleanup { all, force } => cleanup(&store, &project_id, all, force, output),
         SessionCommand::Recovery { command } => recovery(context, &store, command, output),
     }
 }
@@ -413,6 +414,79 @@ pub fn mutate(context: &ConfigContext, id: Uuid, mutation: SessionMutation) -> R
             Ok(format!("Removed session {}", record.alias))
         }
     }
+}
+
+/// Force-remove every session using the requested runtime.
+///
+/// This is used by resource cleanup so its `--force` contract applies equally
+/// to persistent sessions and ordinary managed workloads.
+pub fn remove_all_for_runtime(context: &ConfigContext, runtime_kind: RuntimeKind) -> Result<usize> {
+    let store = SessionStore::for_context(context)?;
+    let records = store
+        .list()?
+        .into_iter()
+        .filter(|record| record.runtime == runtime_kind)
+        .collect::<Vec<_>>();
+    for record in &records {
+        remove_record(&store, record, true)?;
+    }
+    Ok(records.len())
+}
+
+/// Restore a stopped interactive session that owns `container_name`.
+///
+/// A named shell uses this to resume its workload and every session sidecar
+/// before attaching. Missing session state deliberately falls through to the
+/// normal shell launch path, which creates a new workload.
+pub fn restart_stopped_for_container(
+    context: &ConfigContext,
+    project_id: &str,
+    container_name: &str,
+) -> Result<bool> {
+    let store = SessionStore::for_context(context)?;
+    let records = store
+        .list()?
+        .into_iter()
+        .filter(|record| {
+            record.project_id == project_id
+                && record.container_name == container_name
+                && record.status == SessionStatus::Stopped
+        })
+        .collect::<Vec<_>>();
+    match records.as_slice() {
+        [] => Ok(false),
+        [record] => {
+            restart_record(&store, record)?;
+            Ok(true)
+        }
+        _ => Err(HostError::Runtime(format!(
+            "multiple stopped sessions own container {container_name:?}"
+        ))),
+    }
+}
+
+fn cleanup(
+    store: &SessionStore,
+    project_id: &str,
+    all: bool,
+    force: bool,
+    output: OutputFormat,
+) -> Result<u8> {
+    let records = store
+        .list()?
+        .into_iter()
+        .filter(|record| all || record.project_id == project_id)
+        .filter(|record| force || !record.status.is_live())
+        .collect::<Vec<_>>();
+    for record in &records {
+        remove_record(store, record, force)?;
+    }
+    emit(
+        output,
+        &serde_json::json!({"removed": records.len(), "force": force, "all": all}),
+        &format!("removed {} sessions", records.len()),
+    )?;
+    Ok(0)
 }
 
 fn list(store: &SessionStore, project_id: &str, all: bool, output: OutputFormat) -> Result<u8> {
