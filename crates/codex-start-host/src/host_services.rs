@@ -1505,7 +1505,18 @@ mod tests {
             fs::set_permissions(&pending, fs::Permissions::from_mode(0o700)).unwrap();
         }
         fs::rename(pending, &executable).unwrap();
-        Runtime::detect(RuntimeKind::Docker, Some(executable.as_os_str())).unwrap()
+        for attempt in 0..10 {
+            match Runtime::detect(RuntimeKind::Docker, Some(executable.as_os_str())) {
+                Ok(runtime) => return runtime,
+                Err(crate::error::HostError::CommandIo { source, .. })
+                    if source.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 9 =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("detect fake runtime: {error}"),
+            }
+        }
+        unreachable!("fake runtime retry loop must return or panic")
     }
 
     fn mounted_authentication_directory(plan: &HostServicePlan) -> Option<PathBuf> {
