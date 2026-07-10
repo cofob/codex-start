@@ -1,9 +1,10 @@
 //! Strict, schema-versioned and provenance-aware configuration resolution.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
 /// Current on-disk configuration schema.
@@ -318,6 +319,460 @@ impl Default for MergeConfig {
             model: DEFAULT_MERGE_MODEL.to_owned(),
         }
     }
+}
+
+/// Positive fractional CPU count rendered through the portable `--cpus` option.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CpuLimit(String);
+
+impl CpuLimit {
+    fn from_f64(value: f64) -> Result<Self, String> {
+        if !value.is_finite() || value <= 0.0 {
+            return Err("resources.cpus must be a finite positive number".to_owned());
+        }
+        Ok(Self(value.to_string()))
+    }
+
+    fn from_integer(value: &impl ToString, positive: bool) -> Result<Self, String> {
+        if !positive {
+            return Err("resources.cpus must be a finite positive number".to_owned());
+        }
+        Ok(Self(value.to_string()))
+    }
+
+    /// Canonical value accepted by Docker and Podman.
+    #[must_use]
+    pub fn as_engine_value(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Serialize for CpuLimit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Ok(value) = self.0.parse::<u64>() {
+            serializer.serialize_u64(value)
+        } else {
+            self.0
+                .parse::<f64>()
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CpuLimit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct CpuVisitor;
+
+        impl de::Visitor<'_> for CpuVisitor {
+            type Value = CpuLimit;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a finite positive CPU count")
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                CpuLimit::from_integer(&value, value > 0).map_err(E::custom)
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                CpuLimit::from_integer(&value, value > 0).map_err(E::custom)
+            }
+
+            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                CpuLimit::from_f64(value).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_any(CpuVisitor)
+    }
+}
+
+/// Positive byte size with a portable binary unit suffix.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemorySize {
+    value: String,
+    bytes: u64,
+}
+
+impl MemorySize {
+    fn parse(value: &str, path: &str) -> Result<Self, String> {
+        if value.trim() != value || value.is_empty() {
+            return Err(format!(
+                "{path} must be a positive integer followed by an optional b, k, m, or g unit"
+            ));
+        }
+        let normalized = value.to_ascii_lowercase();
+        let (digits, multiplier) = match normalized.as_bytes().last().copied() {
+            Some(b'b') => (&normalized[..normalized.len() - 1], 1),
+            Some(b'k') => (&normalized[..normalized.len() - 1], 1_u64 << 10),
+            Some(b'm') => (&normalized[..normalized.len() - 1], 1_u64 << 20),
+            Some(b'g') => (&normalized[..normalized.len() - 1], 1_u64 << 30),
+            Some(byte) if byte.is_ascii_digit() => (normalized.as_str(), 1),
+            _ => {
+                return Err(format!(
+                    "{path} must be a positive integer followed by an optional b, k, m, or g unit"
+                ));
+            }
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(format!(
+                "{path} must be a positive integer followed by an optional b, k, m, or g unit"
+            ));
+        }
+        let amount = digits
+            .parse::<u64>()
+            .map_err(|_| format!("{path} is too large"))?;
+        let bytes = amount
+            .checked_mul(multiplier)
+            .filter(|bytes| *bytes != 0)
+            .ok_or_else(|| format!("{path} must be positive and fit in 64 bits"))?;
+        Ok(Self {
+            value: normalized,
+            bytes,
+        })
+    }
+
+    /// Canonical size string accepted by Docker and Podman.
+    #[must_use]
+    pub fn as_engine_value(&self) -> &str {
+        &self.value
+    }
+
+    #[must_use]
+    const fn bytes(&self) -> u64 {
+        self.bytes
+    }
+}
+
+impl Serialize for MemorySize {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.value)
+    }
+}
+
+impl<'de> Deserialize<'de> for MemorySize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value, "resource size").map_err(de::Error::custom)
+    }
+}
+
+/// Total memory-plus-swap limit, or the engines' explicit unlimited sentinel.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MemorySwapLimit {
+    Unlimited,
+    Size(MemorySize),
+}
+
+impl MemorySwapLimit {
+    /// Canonical value accepted by Docker and Podman.
+    #[must_use]
+    pub fn as_engine_value(&self) -> &str {
+        match self {
+            Self::Unlimited => "-1",
+            Self::Size(size) => size.as_engine_value(),
+        }
+    }
+}
+
+impl Serialize for MemorySwapLimit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_engine_value())
+    }
+}
+
+impl<'de> Deserialize<'de> for MemorySwapLimit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        if value == "-1" {
+            Ok(Self::Unlimited)
+        } else {
+            MemorySize::parse(&value, "resources.memory_swap")
+                .map(Self::Size)
+                .map_err(de::Error::custom)
+        }
+    }
+}
+
+/// One validated `--ulimit` value in `soft[:hard]` form.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Ulimit {
+    soft: i64,
+    hard: Option<i64>,
+}
+
+impl Ulimit {
+    fn parse(value: &str) -> Result<Self, String> {
+        let mut values = value.split(':');
+        let soft = parse_ulimit_value(values.next().unwrap_or_default())?;
+        let hard = values.next().map(parse_ulimit_value).transpose()?;
+        if values.next().is_some() {
+            return Err("ulimit must use soft[:hard] syntax".to_owned());
+        }
+        if hard.is_some_and(|hard| hard != -1 && (soft == -1 || hard < soft)) {
+            return Err("ulimit hard value must be at least the soft value or -1".to_owned());
+        }
+        Ok(Self { soft, hard })
+    }
+
+    /// Canonical value accepted by Docker and Podman.
+    #[must_use]
+    pub fn as_engine_value(&self) -> String {
+        self.hard.map_or_else(
+            || self.soft.to_string(),
+            |hard| format!("{}:{hard}", self.soft),
+        )
+    }
+}
+
+impl Serialize for Ulimit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.as_engine_value())
+    }
+}
+
+impl<'de> Deserialize<'de> for Ulimit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(de::Error::custom)
+    }
+}
+
+fn parse_ulimit_value(value: &str) -> Result<i64, String> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|value| *value >= -1)
+        .ok_or_else(|| "ulimit values must be non-negative integers or -1".to_owned())
+}
+
+/// Storage for resource-limit fields.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ResourceValues {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<CpuLimit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_shares: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpuset_cpus: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemorySize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_reservation: Option<MemorySize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_swap: Option<MemorySwapLimit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pids_limit: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shm_size: Option<MemorySize>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ulimits: BTreeMap<String, Ulimit>,
+}
+
+/// Resource limits supplied by one configuration layer.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ResourcePatch(Box<ResourceValues>);
+
+impl std::ops::Deref for ResourcePatch {
+    type Target = ResourceValues;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ResourcePatch {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Resolved resource limits for the primary workload container.
+///
+/// The values are boxed so launch orchestration futures remain compact while
+/// serde and field access retain the ordinary resource-table representation.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ResourceLimits(Box<ResourceValues>);
+
+impl std::ops::Deref for ResourceLimits {
+    type Target = ResourceValues;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ResourceLimits {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<ResourcePatch> for ResourceLimits {
+    fn from(patch: ResourcePatch) -> Self {
+        Self(patch.0)
+    }
+}
+
+impl ResourcePatch {
+    fn validate(&self) -> Result<(), String> {
+        validate_resources(&self.clone().into(), false)
+    }
+}
+
+impl ResourceLimits {
+    /// Validate values and relationships after deserialization or plan construction.
+    pub fn validate(&self) -> Result<(), String> {
+        validate_resources(self, true)
+    }
+
+    /// Whether the runtime should retain all engine defaults.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0 == Box::<ResourceValues>::default()
+    }
+}
+
+fn validate_resources(
+    resources: &ResourceLimits,
+    require_memory_for_swap: bool,
+) -> Result<(), String> {
+    if resources
+        .cpu_shares
+        .is_some_and(|shares| !(2..=262_144).contains(&shares))
+    {
+        return Err("resources.cpu_shares must be between 2 and 262144".to_owned());
+    }
+    if let Some(cpuset) = resources.cpuset_cpus.as_deref() {
+        validate_cpuset(cpuset)?;
+    }
+    if resources
+        .memory
+        .as_ref()
+        .is_some_and(|limit| limit.bytes() < 6 * (1_u64 << 20))
+    {
+        return Err("resources.memory must be at least 6m".to_owned());
+    }
+    if let (Some(reservation), Some(limit)) = (
+        resources.memory_reservation.as_ref(),
+        resources.memory.as_ref(),
+    ) && reservation.bytes() >= limit.bytes()
+    {
+        return Err("resources.memory_reservation must be lower than resources.memory".to_owned());
+    }
+    if let Some(swap) = &resources.memory_swap {
+        if let Some(limit) = &resources.memory {
+            if let MemorySwapLimit::Size(swap) = swap
+                && swap.bytes() < limit.bytes()
+            {
+                return Err(
+                    "resources.memory_swap must be at least as large as resources.memory"
+                        .to_owned(),
+                );
+            }
+        } else if require_memory_for_swap {
+            return Err(
+                "resources.memory_swap requires resources.memory to be configured".to_owned(),
+            );
+        }
+    }
+    if resources
+        .pids_limit
+        .is_some_and(|limit| limit != -1 && limit <= 0)
+    {
+        return Err("resources.pids_limit must be positive or -1".to_owned());
+    }
+    for name in resources.ulimits.keys() {
+        if !SUPPORTED_ULIMITS.contains(&name.as_str()) {
+            return Err(format!(
+                "resources.ulimits contains unsupported limit `{name}`"
+            ));
+        }
+    }
+    Ok(())
+}
+
+const SUPPORTED_ULIMITS: &[&str] = &[
+    "core",
+    "cpu",
+    "data",
+    "fsize",
+    "locks",
+    "memlock",
+    "msgqueue",
+    "nice",
+    "nofile",
+    "nproc",
+    "rss",
+    "rtprio",
+    "rttime",
+    "sigpending",
+    "stack",
+];
+
+fn validate_cpuset(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.trim() != value {
+        return Err("resources.cpuset_cpus must use comma-separated CPU numbers or ranges".into());
+    }
+    for item in value.split(',') {
+        let mut bounds = item.split('-');
+        let start = parse_cpu_index(bounds.next().unwrap_or_default())?;
+        if let Some(end) = bounds.next() {
+            let end = parse_cpu_index(end)?;
+            if start > end || bounds.next().is_some() {
+                return Err(
+                    "resources.cpuset_cpus must use ascending CPU ranges such as 0-3,6".into(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_cpu_index(value: &str) -> Result<u32, String> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("resources.cpuset_cpus must use CPU numbers such as 0-3,6".into());
+    }
+    value
+        .parse()
+        .map_err(|_| "resources.cpuset_cpus contains an out-of-range CPU index".into())
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -723,6 +1178,8 @@ pub struct ConfigPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourcePatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub codex: Option<CodexPatch>,
 }
 
@@ -940,6 +1397,7 @@ pub struct EffectiveConfig {
     pub git: GitConfig,
     pub merge: MergeConfig,
     pub proxy: ProxyConfig,
+    pub resources: ResourceLimits,
     pub codex: CodexConfig,
     pub homes: BTreeMap<String, HomeConfig>,
     #[serde(skip_serializing, default)]
@@ -1358,6 +1816,7 @@ fn effective_from_patch(
     let git = patch.git.unwrap_or_default();
     let merge = patch.merge.unwrap_or_default();
     let proxy = patch.proxy.unwrap_or_default();
+    let resources = patch.resources.unwrap_or_default();
     let codex = patch.codex.unwrap_or_default();
     Ok(EffectiveConfig {
         schema_version: CONFIG_SCHEMA_VERSION,
@@ -1418,6 +1877,7 @@ fn effective_from_patch(
             max_header_bytes: proxy.max_header_bytes.unwrap_or(65_536),
             handshake_timeout_seconds: proxy.handshake_timeout_seconds.unwrap_or(5),
         },
+        resources: resources.into(),
         codex: CodexConfig {
             profile: codex.profile,
             args: codex.args.unwrap_or_default(),
@@ -1485,6 +1945,9 @@ fn validate_patch(patch: &ConfigPatch) -> Result<(), ConfigError> {
     }
     if let Some(proxy) = &patch.proxy {
         validate_proxy_patch(proxy)?;
+    }
+    if let Some(resources) = &patch.resources {
+        resources.validate().map_err(ConfigError::Invalid)?;
     }
     if let Some(forwarding) = &patch.forwarding {
         validate_forwarding_patch(forwarding)?;
@@ -1853,6 +2316,7 @@ fn normalized_secret_key(key: &str) -> String {
 }
 
 fn validate_effective(config: &EffectiveConfig) -> Result<(), ConfigError> {
+    config.resources.validate().map_err(ConfigError::Invalid)?;
     for (target, reference) in &config.secret_refs {
         if !config.secrets.contains_key(reference) {
             return Err(ConfigError::UnknownSecret {
@@ -2106,6 +2570,133 @@ mod tests {
             Some("command line")
         );
         assert!(ConfigDocument::parse("[settings.merge]\nmodel='  '\n", "bad").is_err());
+    }
+
+    #[test]
+    fn resource_limits_merge_by_field_and_track_provenance() {
+        let global = ConfigDocument::parse(
+            r#"
+            schema_version = 1
+            [settings.resources]
+            cpus = 2.5
+            memory = "8G"
+            memory_reservation = "4g"
+            memory_swap = "10g"
+            pids_limit = 512
+            shm_size = "1g"
+            [settings.resources.ulimits]
+            nofile = "65536:65536"
+            "#,
+            "global",
+        )
+        .expect("global resources");
+        let project = ConfigDocument::parse(
+            r#"
+            schema_version = 1
+            [settings.resources]
+            cpu_shares = 1024
+            cpuset_cpus = "0-3,6"
+            [settings.resources.ulimits]
+            memlock = "-1:-1"
+            "#,
+            "project",
+        )
+        .expect("project resources");
+        let mut resolver = ConfigResolver::new();
+        resolver
+            .add_document(ConfigLayerKind::Global, "global", global)
+            .expect("add global")
+            .add_document(ConfigLayerKind::Project, "project", project)
+            .expect("add project")
+            .add_environment_overrides([("CODEX_START__RESOURCES__PIDS_LIMIT", "768")])
+            .expect("resource environment override");
+        let effective = resolver.resolve().expect("resolved resources");
+        let resources = &effective.config.resources;
+        assert_eq!(
+            resources.cpus.as_ref().map(CpuLimit::as_engine_value),
+            Some("2.5")
+        );
+        assert_eq!(
+            resources.memory.as_ref().map(MemorySize::as_engine_value),
+            Some("8g")
+        );
+        assert_eq!(resources.cpu_shares, Some(1024));
+        assert_eq!(resources.cpuset_cpus.as_deref(), Some("0-3,6"));
+        assert_eq!(resources.pids_limit, Some(768));
+        assert_eq!(resources.ulimits.len(), 2);
+        assert_eq!(
+            effective
+                .provenance
+                .source_for("resources.cpu_shares")
+                .map(|source| source.label.as_str()),
+            Some("project")
+        );
+        assert_eq!(
+            effective
+                .provenance
+                .source_for("resources.pids_limit")
+                .map(|source| source.kind),
+            Some(ConfigLayerKind::EnvironmentVariables)
+        );
+    }
+
+    #[test]
+    fn resource_limits_reject_invalid_values_and_relationships() {
+        for settings in [
+            "cpus = 0",
+            "cpu_shares = 1",
+            "cpuset_cpus = '3-1'",
+            "memory = '5m'",
+            "memory = '8g'\nmemory_reservation = '8g'",
+            "memory = '8g'\nmemory_swap = '7g'",
+            "pids_limit = 0",
+            "shm_size = '1t'",
+            "[settings.resources.ulimits]\nnofile = '10:9'",
+            "[settings.resources.ulimits]\nunknown = '10'",
+        ] {
+            let input = if settings.starts_with("[settings") {
+                settings.to_owned()
+            } else {
+                format!("[settings.resources]\n{settings}")
+            };
+            let document = ConfigDocument::parse(&input, "invalid resources");
+            if let Ok(document) = document {
+                let mut resolver = ConfigResolver::new();
+                resolver
+                    .add_document(ConfigLayerKind::Global, "invalid", document)
+                    .expect("partial document");
+                assert!(resolver.resolve().is_err(), "accepted {settings:?}");
+            }
+        }
+
+        let swap_only =
+            ConfigDocument::parse("[settings.resources]\nmemory_swap = '-1'", "swap-only")
+                .expect("partial layers may inherit memory");
+        let mut invalid = ConfigResolver::new();
+        invalid
+            .add_document(ConfigLayerKind::Global, "swap-only", swap_only)
+            .expect("add partial layer");
+        assert!(invalid.resolve().is_err());
+
+        let memory = ConfigDocument::parse("[settings.resources]\nmemory = '8g'", "memory")
+            .expect("memory layer");
+        let swap = ConfigDocument::parse("[settings.resources]\nmemory_swap = '-1'", "swap")
+            .expect("swap layer");
+        let mut inherited = ConfigResolver::new();
+        inherited
+            .add_document(ConfigLayerKind::Global, "memory", memory)
+            .expect("add memory")
+            .add_document(ConfigLayerKind::Project, "swap", swap)
+            .expect("add swap");
+        assert_eq!(
+            inherited
+                .resolve()
+                .expect("inherited resources")
+                .config
+                .resources
+                .memory_swap,
+            Some(MemorySwapLimit::Unlimited)
+        );
     }
 
     #[test]

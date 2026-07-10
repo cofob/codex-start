@@ -47,6 +47,28 @@ The scalar settings are:
 | `allow_ssh_hosts` | Host-SSH authority rules; ports default to 22. |
 | `secret_refs` | Map child environment-variable names to global providers. |
 
+`[settings.resources]` applies typed limits to the primary Codex workload container. It does not constrain the egress sidecar or host bridge processes. Every field is optional; when the table is absent, Docker or Podman retains its normal defaults. Resource fields follow normal per-field configuration precedence and may also be supplied by an environment manifest's `[settings.resources]` table.
+
+```toml
+[settings.resources]
+cpus = 4.0
+cpu_shares = 1024
+cpuset_cpus = "0-3"
+memory = "8g"
+memory_reservation = "4g"
+memory_swap = "10g" # total memory plus swap; use "-1" for unlimited swap
+pids_limit = 512     # use -1 for unlimited processes
+shm_size = "1g"
+
+[settings.resources.ulimits]
+nofile = "65536:65536"
+memlock = "-1:-1"
+```
+
+`cpus` is a positive fractional CPU count. `cpu_shares` accepts 2 through 262144, and `cpuset_cpus` accepts comma-separated CPU numbers and ascending ranges such as `0-3,6`. Memory and shared-memory values are positive integers with an optional `b`, `k`, `m`, or `g` binary unit; the hard memory limit is at least `6m`, a reservation must be lower than the hard limit, and a finite swap total must be at least the hard limit. Supported ulimits are `core`, `cpu`, `data`, `fsize`, `locks`, `memlock`, `msgqueue`, `nice`, `nofile`, `nproc`, `rss`, `rtprio`, `rttime`, `sigpending`, and `stack`, using `soft[:hard]` syntax with `-1` for unlimited.
+
+The resolved limits appear in `run --dry-run` output and apply equally to `run`, `shell`, and `merge`. A `--runtime-arg` that repeats a configured typed limit is rejected instead of relying on engine-specific duplicate-option precedence; non-conflicting expert options remain available. Enforcement ultimately depends on the selected engine and host cgroup support, particularly for rootless Podman.
+
 `[settings.merge].model` selects the Codex model used only by `codex-start merge`; it defaults to `gpt-5.6-terra`. The equivalent environment override is `CODEX_START__MERGE__MODEL`, and the command's `--model` option has highest precedence.
 
 Rootless Podman reserves the engine's user, user-namespace, UID/GID-map, and subordinate-ID options. codex-start supplies `--userns keep-id:uid=<workload-uid>,gid=<workload-gid> --user 0:0` itself: the explicit root user is only for the container init helper, which then runs preparation and the final workload as the mapped UID/GID. Conflicting `--runtime-arg` values are rejected instead of producing a checkout that appears writable but fails at runtime. A remote rootless service gets the same explicit target mapping, which avoids assuming its service account shares the client's numeric ID. Docker and rootful Podman are unchanged.

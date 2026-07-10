@@ -9,6 +9,7 @@ use std::{
 };
 
 use clap::ValueEnum;
+use codex_start_core::ResourceLimits;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -92,6 +93,8 @@ pub struct RunRequest {
     pub mounts: Vec<MountRequest>,
     /// Published ports.
     pub publish: Vec<PublishRequest>,
+    /// Typed limits for the primary workload. Helper requests leave this empty.
+    pub resources: ResourceLimits,
     /// Initial network name or special mode.
     pub network: Option<String>,
     /// Network-scoped alias.
@@ -867,6 +870,7 @@ impl Runtime {
                 )),
             ]);
         }
+        command = append_resource_args(command, &request.resources);
         command = command.args(request.extra_args.clone());
         command = command.arg(&request.image).args(request.command.clone());
         if request.detach {
@@ -1072,6 +1076,46 @@ impl Runtime {
             output.require_success(&self.program).map(|_| ())
         }
     }
+}
+
+fn append_resource_args(mut command: CommandSpec, resources: &ResourceLimits) -> CommandSpec {
+    if let Some(cpus) = &resources.cpus {
+        command = command.args(["--cpus", cpus.as_engine_value()]);
+    }
+    if let Some(cpu_shares) = resources.cpu_shares {
+        command = command.args([
+            OsString::from("--cpu-shares"),
+            OsString::from(cpu_shares.to_string()),
+        ]);
+    }
+    if let Some(cpuset_cpus) = &resources.cpuset_cpus {
+        command = command.args(["--cpuset-cpus", cpuset_cpus]);
+    }
+    if let Some(memory) = &resources.memory {
+        command = command.args(["--memory", memory.as_engine_value()]);
+    }
+    if let Some(memory_reservation) = &resources.memory_reservation {
+        command = command.args(["--memory-reservation", memory_reservation.as_engine_value()]);
+    }
+    if let Some(memory_swap) = &resources.memory_swap {
+        command = command.args(["--memory-swap", memory_swap.as_engine_value()]);
+    }
+    if let Some(pids_limit) = resources.pids_limit {
+        command = command.args([
+            OsString::from("--pids-limit"),
+            OsString::from(pids_limit.to_string()),
+        ]);
+    }
+    if let Some(shm_size) = &resources.shm_size {
+        command = command.args(["--shm-size", shm_size.as_engine_value()]);
+    }
+    for (name, limit) in &resources.ulimits {
+        command = command.args([
+            OsString::from("--ulimit"),
+            OsString::from(format!("{name}={}", limit.as_engine_value())),
+        ]);
+    }
+    command
 }
 
 /// Render an engine port specification, bracketing IPv6 bind addresses.
@@ -1359,6 +1403,60 @@ mod tests {
             &command.args[command.args.len() - 3..],
             ["example/image:locked", "codex", "hello world"]
         );
+    }
+
+    #[test]
+    fn renders_typed_resources_identically_for_docker_and_podman() {
+        let request = RunRequest {
+            name: "resource-test".to_owned(),
+            image: "example/image:locked".to_owned(),
+            resources: toml::from_str(
+                r#"
+                cpus = 2.5
+                cpu_shares = 1024
+                cpuset_cpus = "0-3"
+                memory = "8g"
+                memory_reservation = "4g"
+                memory_swap = "10g"
+                pids_limit = 512
+                shm_size = "1g"
+                [ulimits]
+                memlock = "-1:-1"
+                nofile = "65536:65536"
+                "#,
+            )
+            .expect("resource limits"),
+            ..RunRequest::default()
+        };
+        let expected = [
+            "run",
+            "--name",
+            "resource-test",
+            "--cpus",
+            "2.5",
+            "--cpu-shares",
+            "1024",
+            "--cpuset-cpus",
+            "0-3",
+            "--memory",
+            "8g",
+            "--memory-reservation",
+            "4g",
+            "--memory-swap",
+            "10g",
+            "--pids-limit",
+            "512",
+            "--shm-size",
+            "1g",
+            "--ulimit",
+            "memlock=-1:-1",
+            "--ulimit",
+            "nofile=65536:65536",
+            "example/image:locked",
+        ];
+        for kind in [RuntimeKind::Docker, RuntimeKind::Podman] {
+            assert_eq!(runtime(kind).run_command(&request).args, expected);
+        }
     }
 
     #[test]

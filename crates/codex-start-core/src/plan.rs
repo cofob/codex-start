@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::config::{NetworkMode, RuntimeKind};
+use crate::config::{NetworkMode, ResourceLimits, RuntimeKind};
 use crate::environment::PortProtocol;
 
 /// One Unix process argument, preserved as its exact byte sequence.
@@ -345,6 +345,8 @@ pub struct ContainerPlan {
     pub mounts: Vec<MountPlan>,
     #[serde(default)]
     pub ports: Vec<PublishedPort>,
+    #[serde(default, skip_serializing_if = "ResourceLimits::is_empty")]
+    pub resources: ResourceLimits,
     pub network: NetworkPlan,
     #[serde(default = "default_true")]
     pub tty: bool,
@@ -413,6 +415,7 @@ impl ContainerPlan {
             ]),
             mounts: Vec::new(),
             ports: Vec::new(),
+            resources: ResourceLimits::default(),
             network,
             tty: true,
             stdin: true,
@@ -459,6 +462,9 @@ impl ContainerPlan {
         validate_env(&self.env)?;
         validate_mounts(&self.mounts)?;
         validate_ports(&self.ports)?;
+        self.resources
+            .validate()
+            .map_err(ContainerPlanError::Invalid)?;
         validate_secrets(&self.secrets)?;
         self.network.validate()?;
         if self.network.mode == NetworkMode::Host && !self.ports.is_empty() {

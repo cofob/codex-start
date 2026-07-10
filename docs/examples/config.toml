@@ -46,6 +46,20 @@ header_timeout_seconds = 10
 max_header_bytes = 65536
 handshake_timeout_seconds = 5
 
+[settings.resources]
+cpus = 4.0
+cpu_shares = 1024
+cpuset_cpus = "0-3"
+memory = "8g"
+memory_reservation = "4g"
+memory_swap = "10g"
+pids_limit = 512
+shm_size = "1g"
+
+[settings.resources.ulimits]
+nofile = "65536:65536"
+memlock = "-1:-1"
+
 [settings.codex]
 profile = "container"
 args = []

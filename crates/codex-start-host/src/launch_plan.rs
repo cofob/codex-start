@@ -14,7 +14,7 @@ use std::{
 
 use codex_start_core::{
     ContainerPlan, ContainerPlanError, HostServiceSpec, MountPlan, MountSource, NetworkMode,
-    NetworkPlan, PortProtocol, PublishedPort, RuntimeKind, UnixArgument,
+    NetworkPlan, PortProtocol, PublishedPort, ResourceLimits, RuntimeKind, UnixArgument,
 };
 use codex_start_proxy::container_init::{
     CommandSpec as PrepareCommand, ExecSpec, InitServiceSpec, InitSpec,
@@ -307,6 +307,7 @@ impl HostLaunchPlan {
             labels,
             mounts,
             publish,
+            resources,
             network,
             network_alias,
             user_namespace,
@@ -356,6 +357,7 @@ impl HostLaunchPlan {
             .enumerate()
             .map(|(index, port)| port_to_core(index, port))
             .collect::<Result<Vec<_>, _>>()?;
+        container.resources = resources;
         container.tty = tty;
         container.stdin = interactive;
         container.remove = remove;
@@ -446,6 +448,7 @@ impl HostLaunchPlan {
                 .iter()
                 .map(port_to_runtime)
                 .collect::<Result<Vec<_>, _>>()?,
+            resources: self.container.resources.clone(),
             network: self.runtime.network.clone(),
             network_alias: self.runtime.network_alias.clone(),
             user_namespace: self.runtime.user_namespace.clone(),
@@ -511,6 +514,7 @@ fn validate_runtime(plan: &HostLaunchPlan) -> Result<(), LaunchPlanError> {
     }
     validate_runtime_environment(plan)?;
     validate_runtime_network(plan)?;
+    validate_resource_arg_conflicts(&plan.container.resources, &runtime.extra_args)?;
     validate_clean_map(&runtime.add_hosts, "add-host")?;
     if runtime
         .network_alias
@@ -580,6 +584,84 @@ fn validate_runtime(plan: &HostLaunchPlan) -> Result<(), LaunchPlanError> {
         ));
     }
     Ok(())
+}
+
+fn validate_resource_arg_conflicts(
+    resources: &ResourceLimits,
+    arguments: &[UnixArgument],
+) -> Result<(), LaunchPlanError> {
+    if resources.is_empty() {
+        return Ok(());
+    }
+    for (index, argument) in arguments.iter().enumerate() {
+        let Some(argument) = argument.to_str() else {
+            continue;
+        };
+        let conflict = if resources.cpus.is_some()
+            && ["--cpus", "--cpu-period", "--cpu-quota"]
+                .iter()
+                .any(|option| long_option(argument, option))
+        {
+            Some("cpus")
+        } else if resources.cpu_shares.is_some()
+            && (long_option(argument, "--cpu-shares") || short_option(argument, "-c"))
+        {
+            Some("cpu_shares")
+        } else if resources.cpuset_cpus.is_some() && long_option(argument, "--cpuset-cpus") {
+            Some("cpuset_cpus")
+        } else if resources.memory.is_some()
+            && (long_option(argument, "--memory") || short_option(argument, "-m"))
+        {
+            Some("memory")
+        } else if resources.memory_reservation.is_some()
+            && long_option(argument, "--memory-reservation")
+        {
+            Some("memory_reservation")
+        } else if resources.memory_swap.is_some() && long_option(argument, "--memory-swap") {
+            Some("memory_swap")
+        } else if resources.pids_limit.is_some() && long_option(argument, "--pids-limit") {
+            Some("pids_limit")
+        } else if resources.shm_size.is_some() && long_option(argument, "--shm-size") {
+            Some("shm_size")
+        } else {
+            conflicting_ulimit(resources, arguments, index, argument)
+        };
+        if let Some(key) = conflict {
+            return Err(LaunchPlanError::Invalid(format!(
+                "runtime argument `{argument}` conflicts with settings.resources.{key}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn long_option(argument: &str, option: &str) -> bool {
+    argument == option
+        || argument
+            .strip_prefix(option)
+            .is_some_and(|suffix| suffix.starts_with('='))
+}
+
+fn short_option(argument: &str, option: &str) -> bool {
+    argument == option
+        || argument
+            .strip_prefix(option)
+            .is_some_and(|suffix| !suffix.is_empty() && !suffix.starts_with('-'))
+}
+
+fn conflicting_ulimit<'a>(
+    resources: &'a ResourceLimits,
+    arguments: &'a [UnixArgument],
+    index: usize,
+    argument: &'a str,
+) -> Option<&'a str> {
+    let value = argument.strip_prefix("--ulimit=").or_else(|| {
+        (argument == "--ulimit")
+            .then(|| arguments.get(index + 1).and_then(UnixArgument::to_str))
+            .flatten()
+    })?;
+    let name = value.split_once('=').map_or(value, |(name, _)| name);
+    resources.ulimits.contains_key(name).then_some(name)
 }
 
 fn validate_runtime_environment(plan: &HostLaunchPlan) -> Result<(), LaunchPlanError> {
@@ -990,6 +1072,21 @@ mod tests {
                 container_port: 5173,
                 protocol: "tcp".to_owned(),
             }],
+            resources: toml::from_str(
+                r#"
+                cpus = 2.5
+                cpu_shares = 1024
+                cpuset_cpus = "0-3"
+                memory = "8g"
+                memory_reservation = "4g"
+                memory_swap = "10g"
+                pids_limit = 512
+                shm_size = "1g"
+                [ulimits]
+                nofile = "65536:65536"
+                "#,
+            )
+            .expect("resource limits"),
             network: Some("isolated-one".to_owned()),
             network_alias: Some("workload".to_owned()),
             user_namespace: Some("keep-id".to_owned()),
@@ -1027,6 +1124,46 @@ mod tests {
         let restored: HostLaunchPlan = serde_json::from_slice(&json).expect("deserialize plan");
         assert_eq!(restored, plan);
         assert_eq!(restored.to_run_request().expect("restore request"), request);
+    }
+
+    #[test]
+    fn typed_resources_reject_conflicting_expert_runtime_arguments() {
+        for arguments in [
+            vec![OsString::from("--cpus=4")],
+            vec![OsString::from("--cpu-period"), OsString::from("100000")],
+            vec![OsString::from("-c2048")],
+            vec![OsString::from("--cpuset-cpus=4-7")],
+            vec![OsString::from("--memory"), OsString::from("12g")],
+            vec![OsString::from("-m12g")],
+            vec![OsString::from("--memory-reservation=6g")],
+            vec![OsString::from("--memory-swap=-1")],
+            vec![OsString::from("--pids-limit=1024")],
+            vec![OsString::from("--shm-size=2g")],
+            vec![
+                OsString::from("--ulimit"),
+                OsString::from("nofile=1024:1024"),
+            ],
+        ] {
+            let mut request = complete_request();
+            request.extra_args = arguments;
+            let error = HostLaunchPlan::from_run_request(
+                request,
+                context(NetworkPlan::offline("isolated-one".to_owned())),
+            )
+            .expect_err("typed resource conflict");
+            assert!(error.to_string().contains("settings.resources"));
+        }
+
+        let mut non_conflicting = complete_request();
+        non_conflicting.extra_args = vec![
+            OsString::from("--ulimit=stack=8192:8192"),
+            OsString::from("--memory-swappiness=20"),
+        ];
+        HostLaunchPlan::from_run_request(
+            non_conflicting,
+            context(NetworkPlan::offline("isolated-one".to_owned())),
+        )
+        .expect("non-conflicting expert resource options");
     }
 
     #[test]

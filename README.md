@@ -95,6 +95,12 @@ network = "allowlist"
 worktree = "auto"
 home = "default"
 
+[settings.resources]
+cpus = 4.0
+memory = "8g"
+pids_limit = 512
+shm_size = "1g"
+
 [settings.merge]
 model = "gpt-5.6-terra"
 

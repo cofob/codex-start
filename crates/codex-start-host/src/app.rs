@@ -1359,6 +1359,7 @@ fn build_execution_artifacts(
         labels: prepared.labels.clone(),
         mounts: files.mounts,
         publish: host.ports.clone(),
+        resources: launch.config.resources.clone(),
         network: network.workload_network.clone(),
         add_hosts,
         tty: tty_enabled(launch.config.tty),
@@ -1864,6 +1865,7 @@ fn preview_run_request(
         labels,
         mounts,
         publish: topology.ports.clone(),
+        resources: config.resources.clone(),
         network: match config.network {
             NetworkMode::Bridge => None,
             NetworkMode::Host => Some("host".to_owned()),
@@ -3709,6 +3711,7 @@ mod tests {
             git: GitConfig::default(),
             merge: MergeConfig::default(),
             proxy: ProxyConfig::default(),
+            resources: codex_start_core::ResourceLimits::default(),
             codex: CodexConfig {
                 profile: None,
                 args: Vec::new(),
