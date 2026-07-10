@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use codex_start_core::ContainerPath;
 use flate2::{Compression, GzBuilder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -2138,7 +2139,7 @@ fn validate_unique_paths(kind: &str, paths: &[PathBuf], environment: &str) -> Re
 
 fn ensure_absolute_path(kind: &str, path: &Path, environment: &str) -> Result<()> {
     ensure(
-        path.is_absolute() && !path.components().any(|part| part == Component::ParentDir),
+        ContainerPath::new(path).is_ok(),
         format!("{environment} {kind} must be an absolute normalized path"),
     )
 }
@@ -2231,6 +2232,8 @@ mod tests {
             .expect("xtask is in the repository root");
         let global_path = root.join("docs/examples/config.toml");
         let global = fs::read_to_string(&global_path).expect("read global example");
+        #[cfg(windows)]
+        let global = global.replace("/absolute/path/to/", "C:/absolute/path/to/");
         ConfigDocument::parse(&global, global_path.display().to_string())
             .expect("parse global example");
 

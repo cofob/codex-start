@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 clap.workspace = true
+codex-start-core = { version = "0.1.0", path = "../crates/codex-start-core" }
 flate2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -18,9 +19,6 @@ tempfile.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 zip.workspace = true
-
-[dev-dependencies]
-codex-start-core = { version = "0.1.0", path = "../crates/codex-start-core" }
 
 [lints]
 workspace = true
