@@ -73,7 +73,7 @@ jobs:
           IMAGE: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/codex-start-${{ matrix.environment }}
           DIGEST: ${{ steps.build.outputs.digest }}
         run: cosign sign --yes "$IMAGE@$DIGEST"
-      - uses: aquasecurity/trivy-action@0.30.0
+      - uses: aquasecurity/trivy-action@v0.30.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/codex-start-${{ matrix.environment }}@${{ steps.build.outputs.digest }}
           format: sarif
@@ -139,7 +139,7 @@ jobs:
           IMAGE: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/codex-start-sidecar
           DIGEST: ${{ steps.build.outputs.digest }}
         run: cosign sign --yes "$IMAGE@$DIGEST"
-      - uses: aquasecurity/trivy-action@0.30.0
+      - uses: aquasecurity/trivy-action@v0.30.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/codex-start-sidecar@${{ steps.build.outputs.digest }}
           format: sarif
@@ -152,4 +152,3 @@ jobs:
         with:
           sarif_file: trivy.sarif
           category: image-sidecar
-

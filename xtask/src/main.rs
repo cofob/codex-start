@@ -1144,7 +1144,7 @@ fn image_tag(
         hasher.update((contents.len() as u64).to_le_bytes());
         hasher.update(contents);
     }
-    let digest = format!("{:x}", hasher.finalize());
+    let digest = hex_encode(hasher.finalize());
     Ok(format!(
         "codex-start-{environment}:{version}-{}-{}",
         architecture.as_str(),
@@ -1558,7 +1558,16 @@ fn sha256_file(path: &Path) -> Result<String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex_encode(hasher.finalize()))
+}
+
+fn hex_encode(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
 }
 
 fn write_release_checksums(directory: &Path, output: &Path) -> Result<()> {
