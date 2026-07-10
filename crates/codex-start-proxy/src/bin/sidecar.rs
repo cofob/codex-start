@@ -1,5 +1,4 @@
-//! Sidecar process entry point.
-
+// Sidecar process entry point.
 use std::{net::SocketAddr, os::unix::ffi::OsStringExt, path::PathBuf, time::Duration};
 
 use clap::{Parser, Subcommand, ValueEnum};

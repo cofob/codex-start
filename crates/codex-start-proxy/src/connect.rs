@@ -3,9 +3,11 @@
 use std::{future::Future, io, sync::Arc, time::Duration};
 
 use thiserror::Error;
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{TcpListener, TcpStream, UnixListener},
+    net::{TcpListener, TcpStream},
     sync::Semaphore,
     task::JoinSet,
     time::timeout,
@@ -509,6 +511,7 @@ async fn handle_tcp_forward(
 ///
 /// Returns an error for invalid resource limits or a listener-level accept
 /// failure. Per-connection failures are isolated and logged.
+#[cfg(unix)]
 pub async fn serve_unix_authenticated_connect_bridge<F>(
     listener: UnixListener,
     proxy_address: String,

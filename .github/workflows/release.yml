@@ -1,4 +1,4 @@
-name: Release binaries
+name: Release binaries, packages, and images
 
 on:
   push:
@@ -6,132 +6,503 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing v-prefixed tag to package
+        description: Existing v-prefixed tag to release
         required: true
+        type: string
 
 permissions:
-  attestations: write
-  contents: write
-  id-token: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  preflight:
+    name: Validate release tag
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+      version: ${{ steps.metadata.outputs.version }}
+      source_date_epoch: ${{ steps.metadata.outputs.source_date_epoch }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4e529fb27e59237866a6523e61ab248308c068b4 # 1.88.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: release-preflight
+      - name: Derive and validate release metadata
+        id: metadata
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          TRIGGER_REF: ${{ github.ref }}
+          TRIGGER_EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "release tag must be canonical v-prefixed SemVer without build metadata: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          if (( ${#RELEASE_TAG} > 128 )); then
+            echo "release tag exceeds the OCI 128-character limit" >&2
+            exit 1
+          fi
+          if [[ "${TRIGGER_EVENT}" == workflow_dispatch && "${TRIGGER_REF}" != "refs/tags/${RELEASE_TAG}" ]]; then
+            echo "manual releases must select ${RELEASE_TAG} in the workflow ref picker so OIDC signatures use the tag identity" >&2
+            exit 1
+          fi
+          version="${RELEASE_TAG#v}"
+          workspace_version="$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "codex-start") | .version')"
+          if [[ "${workspace_version}" != "${version}" ]]; then
+            echo "tag version ${version} does not match workspace version ${workspace_version}" >&2
+            exit 1
+          fi
+          commit="$(git rev-parse --verify "${RELEASE_TAG}^{commit}")"
+          epoch="$(git show --no-patch --format=%ct "${commit}")"
+          core_version="${version%%+*}"
+          prerelease=false
+          [[ "${core_version}" == *-* ]] && prerelease=true
+          {
+            echo "tag=${RELEASE_TAG}"
+            echo "version=${version}"
+            echo "source_date_epoch=${epoch}"
+            echo "prerelease=${prerelease}"
+          } >>"${GITHUB_OUTPUT}"
+      - name: Validate repository and release tooling
+        run: |
+          cargo run --locked --package xtask -- validate
+          cargo test --locked --package xtask
+
+  images:
+    name: Publish multi-platform OCI images
+    needs: preflight
+    uses: ./.github/workflows/images.yml
+    with:
+      ref: ${{ needs.preflight.outputs.tag }}
+      release_tag: ${{ needs.preflight.outputs.tag }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+
   build:
-    name: ${{ matrix.target }}
+    name: Build ${{ matrix.target }}
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-24.04
-            cross: false
+            builder: zig
+            archive_extension: tar.gz
+            binary: codex-start
+            verify_static: false
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04
-            cross: true
+            builder: zig
+            archive_extension: tar.gz
+            binary: codex-start
+            verify_static: false
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            builder: zig
+            archive_extension: tar.gz
+            binary: codex-start
+            verify_static: true
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04
+            builder: zig
+            archive_extension: tar.gz
+            binary: codex-start
+            verify_static: true
           - target: x86_64-apple-darwin
-            runner: macos-13
-            cross: false
+            runner: macos-15-intel
+            builder: native
+            archive_extension: tar.gz
+            binary: codex-start
+            verify_static: false
           - target: aarch64-apple-darwin
-            runner: macos-14
-            cross: false
+            runner: macos-15
+            builder: native
+            archive_extension: tar.gz
+            binary: codex-start
+            verify_static: false
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+            builder: native
+            archive_extension: zip
+            binary: codex-start.exe
+            verify_static: false
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            builder: native
+            archive_extension: zip
+            binary: codex-start.exe
+            verify_static: false
     runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
-      - name: Derive release metadata from the tag commit
-        id: release_metadata
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "release tag must be a v-prefixed semantic version: ${RELEASE_TAG}" >&2
-            exit 1
-          fi
-          commit="$(git rev-parse --verify "${RELEASE_TAG}^{commit}")"
-          epoch="$(git show --no-patch --format=%ct "${commit}")"
-          echo "version=${RELEASE_TAG#v}" >>"${GITHUB_OUTPUT}"
-          echo "source_date_epoch=${epoch}" >>"${GITHUB_OUTPUT}"
-      - uses: dtolnay/rust-toolchain@stable
+          ref: ${{ needs.preflight.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@4e529fb27e59237866a6523e61ab248308c068b4 # 1.88.0
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: release-${{ matrix.target }}
-      - uses: taiki-e/install-action@cross
-        if: matrix.cross
-      - uses: anchore/sbom-action/download-syft@v0
-      - uses: sigstore/cosign-installer@v3.8.1
-      - name: Build
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        if: matrix.builder == 'zig'
+        with:
+          version: 0.15.2
+      - uses: taiki-e/install-action@c7eb1735f09259a5035e8e5d44b1406b1cddc0fb # v2
+        if: matrix.builder == 'zig'
+        with:
+          tool: cargo-zigbuild@0.23.0
+      - name: Build release binary
         shell: bash
         run: |
-          if [[ "${{ matrix.cross }}" == "true" ]]; then
-            cross build --locked --release --package codex-start --target "${{ matrix.target }}"
+          set -euo pipefail
+          if [[ "${{ matrix.builder }}" == zig ]]; then
+            target="${{ matrix.target }}"
+            if [[ "${target}" == *-linux-gnu ]]; then
+              target="${target}.2.17"
+            fi
+            cargo zigbuild --locked --release --package codex-start --target "${target}"
           else
             cargo build --locked --release --package codex-start --target "${{ matrix.target }}"
           fi
-      - name: Package, inventory, and sign
+      - name: Smoke-test native release binary
+        if: matrix.builder == 'native'
+        shell: bash
+        run: target/${{ matrix.target }}/release/${{ matrix.binary }} --version
+      - name: Verify static musl linkage
+        if: matrix.verify_static
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          file "${binary}"
+          if readelf --program-headers "${binary}" | grep --quiet 'INTERP'; then
+            echo "musl release contains a dynamic interpreter" >&2
+            exit 1
+          fi
+          if readelf --dynamic "${binary}" 2>/dev/null | grep --quiet '(NEEDED)'; then
+            echo "musl release contains dynamic dependencies" >&2
+            exit 1
+          fi
+      - name: Verify GNU libc baseline
+        if: endsWith(matrix.target, 'linux-gnu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          highest="$(readelf --version-info "${binary}" \
+            | grep --only-matching --extended-regexp 'GLIBC_[0-9]+(\.[0-9]+)*' \
+            | sed 's/^GLIBC_//' | sort --version-sort --unique | tail --lines 1)"
+          if [[ "$(printf '%s\n' 2.17 "${highest}" | sort --version-sort | tail --lines 1)" != 2.17 ]]; then
+            echo "GNU release requires GLIBC_${highest}, newer than the GLIBC_2.17 baseline" >&2
+            exit 1
+          fi
+      - name: Package deterministic archive
         id: package
         shell: bash
         env:
-          RELEASE_VERSION: ${{ steps.release_metadata.outputs.version }}
-          SOURCE_DATE_EPOCH: ${{ steps.release_metadata.outputs.source_date_epoch }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.preflight.outputs.source_date_epoch }}
         run: |
           set -euo pipefail
           archive="codex-start-${RELEASE_VERSION}-${{ matrix.target }}"
           mkdir -p "staging/${archive}"
-          cp "target/${{ matrix.target }}/release/codex-start" "staging/${archive}/"
-          cp README.md LICENSE "staging/${archive}/"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
+            "staging/${archive}/${{ matrix.binary }}"
+          cp README.md LICENSE LICENSE-NOTICE "staging/${archive}/"
           cargo run --quiet --locked --package xtask -- release-archive \
-            "staging/${archive}" "${archive}.tar.gz" \
-            --prefix "${archive}" --executable codex-start
-          syft "dir:staging/${archive}" -o "spdx-json=${archive}.spdx.json"
-          cosign sign-blob --yes --bundle "${archive}.tar.gz.bundle" "${archive}.tar.gz"
-          echo "archive=${archive}" >>"$GITHUB_OUTPUT"
-      - name: Attest binary archive provenance
-        uses: actions/attest-build-provenance@v2
+            "staging/${archive}" "${archive}.${{ matrix.archive_extension }}" \
+            --prefix "${archive}" --executable "${{ matrix.binary }}"
+          echo "archive=${archive}.${{ matrix.archive_extension }}" >>"${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          subject-path: ${{ steps.package.outputs.archive }}.tar.gz
-      - name: Attest SBOM provenance
-        uses: actions/attest-build-provenance@v2
+          name: release-archive-${{ matrix.target }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: contains(matrix.target, 'linux')
         with:
-          subject-path: ${{ steps.package.outputs.archive }}.spdx.json
-      - uses: actions/upload-artifact@v4
+          name: release-binary-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary }}
+          if-no-files-found: error
+
+  packages:
+    name: Package ${{ matrix.format }} / ${{ matrix.arch }}
+    needs: [preflight, build]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - format: deb
+            target: x86_64-unknown-linux-gnu
+            arch: amd64
+          - format: deb
+            target: aarch64-unknown-linux-gnu
+            arch: arm64
+          - format: rpm
+            target: x86_64-unknown-linux-gnu
+            arch: amd64
+          - format: rpm
+            target: aarch64-unknown-linux-gnu
+            arch: arm64
+          - format: apk
+            target: x86_64-unknown-linux-musl
+            arch: amd64
+          - format: apk
+            target: aarch64-unknown-linux-musl
+            arch: arm64
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          name: ${{ steps.package.outputs.archive }}
-          path: |
-            ${{ steps.package.outputs.archive }}.tar.gz
-            ${{ steps.package.outputs.archive }}.tar.gz.bundle
-            ${{ steps.package.outputs.archive }}.spdx.json
+          ref: ${{ needs.preflight.outputs.tag }}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.26.4
+          cache: false
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-binary-${{ matrix.target }}
+          path: ${{ runner.temp }}/release-binary
+      - name: Install pinned nFPM
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+      - name: Build native Linux package
+        id: package
+        shell: bash
+        env:
+          NFPM_ARCH: ${{ matrix.arch }}
+          NFPM_VERSION: ${{ needs.preflight.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.preflight.outputs.source_date_epoch }}
+        run: |
+          set -euo pipefail
+          export NFPM_BINARY="${RUNNER_TEMP}/release-binary/codex-start"
+          output="codex-start-${NFPM_VERSION}-${{ matrix.target }}.${{ matrix.format }}"
+          nfpm package --config packaging/nfpm.yaml \
+            --packager "${{ matrix.format }}" --target "${output}"
+          echo "artifact=${output}" >>"${GITHUB_OUTPUT}"
+      - name: Install, execute, and remove package
+        shell: bash
+        env:
+          PACKAGE: ${{ steps.package.outputs.artifact }}
+          PLATFORM: linux/${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "${{ matrix.format }}" in
+            deb)
+              image=debian:bookworm-slim
+              command='apt-get update; apt-get install --yes "/packages/${PACKAGE}"; codex-start --version; apt-get remove --yes codex-start'
+              ;;
+            rpm)
+              image=fedora:latest
+              command='dnf install --assumeyes "/packages/${PACKAGE}"; codex-start --version; dnf remove --assumeyes codex-start'
+              ;;
+            apk)
+              image=alpine:latest
+              command='apk add --allow-untrusted "/packages/${PACKAGE}"; codex-start --version; apk del codex-start'
+              ;;
+          esac
+          docker run --rm --platform "${PLATFORM}" \
+            --env "PACKAGE=${PACKAGE}" --volume "${PWD}:/packages:ro" \
+            "${image}" /bin/sh -euc "${command}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-package-${{ matrix.format }}-${{ matrix.arch }}
+          path: ${{ steps.package.outputs.artifact }}
           if-no-files-found: error
 
   publish:
-    name: Checksums and GitHub release
-    needs: build
+    name: Sign, attest, and publish GitHub release
+    needs: [preflight, images, build, packages]
     runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+      packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: sigstore/cosign-installer@v3.8.1
-      - uses: actions/download-artifact@v4
+          ref: ${{ needs.preflight.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@4e529fb27e59237866a6523e61ab248308c068b4 # 1.88.0
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+      - uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
-          pattern: codex-start-*
+          pattern: release-archive-*
           merge-multiple: true
-      - name: Generate and sign checksums
-        run: |
-          cargo run --quiet --locked --package xtask -- release-checksums dist --output dist/SHA256SUMS
-          cosign sign-blob --yes --bundle dist/SHA256SUMS.bundle dist/SHA256SUMS
-          cargo run --quiet --locked --package xtask -- verify-checksums dist/SHA256SUMS --base dist
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
+          path: dist
+          pattern: release-package-*
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: image-promotions
+          pattern: image-promotion-*
+          merge-multiple: true
+      - name: Add installer entrypoints
+        run: cp install.sh install.ps1 dist/
+      - name: Generate SBOMs and verified keyless signatures
+        shell: bash
+        env:
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(
+            dist/*.tar.gz dist/*.zip dist/*.deb dist/*.rpm dist/*.apk
+            dist/install.sh dist/install.ps1
+          )
+          if [[ "${#artifacts[@]}" -ne 16 ]]; then
+            echo "expected 16 primary release artifacts, found ${#artifacts[@]}" >&2
+            printf '%s\n' "${artifacts[@]}" >&2
+            exit 1
+          fi
+          for artifact in "${artifacts[@]}"; do
+            SYFT_FILE_METADATA_SELECTION=all \
+              syft scan "${artifact}" -o "spdx-json=${artifact}.spdx.json"
+            cosign sign-blob --yes --bundle "${artifact}.bundle" "${artifact}"
+            cosign verify-blob \
+              --bundle "${artifact}.bundle" \
+              --certificate-identity "${CERTIFICATE_IDENTITY}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "${artifact}"
+          done
+      - name: Generate and validate signed release manifest
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          cargo run --quiet --locked --package xtask -- release-manifest \
+            dist --version "${RELEASE_VERSION}" --output dist/release-manifest.json
+          cargo run --quiet --locked --package xtask -- validate-release-manifest \
+            dist/release-manifest.json --base dist
+          cosign sign-blob --yes --bundle dist/release-manifest.json.bundle \
+            dist/release-manifest.json
+          cosign verify-blob \
+            --bundle dist/release-manifest.json.bundle \
+            --certificate-identity "${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            dist/release-manifest.json
+      - name: Generate and verify signed checksums
+        shell: bash
+        env:
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          cargo run --quiet --locked --package xtask -- release-checksums \
+            dist --output dist/SHA256SUMS
+          cargo run --quiet --locked --package xtask -- verify-checksums \
+            dist/SHA256SUMS --base dist
+          cosign sign-blob --yes --bundle dist/SHA256SUMS.bundle dist/SHA256SUMS
+          cosign verify-blob \
+            --bundle dist/SHA256SUMS.bundle \
+            --certificate-identity "${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            dist/SHA256SUMS
+      - name: Attest release asset provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/*
+      - name: Refuse to mutate an already published release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if draft="$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft 2>release-view.err)"; then
+            if [[ "${draft}" != true ]]; then
+              echo "release ${RELEASE_TAG} is already published and immutable" >&2
+              exit 1
+            fi
+          elif ! grep --quiet --extended-regexp 'HTTP 404|release not found' release-view.err; then
+            cat release-view.err >&2
+            echo "could not prove that release ${RELEASE_TAG} is absent or still a draft" >&2
+            exit 1
+          fi
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote all verified image indexes at the release barrier
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          records=(image-promotions/image-promotion-*.json)
+          if [[ "${#records[@]}" -ne 5 ]]; then
+            echo "expected five verified image promotion records" >&2
+            exit 1
+          fi
+          for record in "${records[@]}"; do
+            image="$(jq -r .image "${record}")"
+            digest="$(jq -r .digest "${record}")"
+            existing="$(jq -r .existing "${record}")"
+            record_release="$(jq -r .release_tag "${record}")"
+            test "${record_release}" = "${RELEASE_TAG}"
+            [[ "${existing}" == false ]] || continue
+            jq -r '.tags | split("\n")[]' "${record}" | while IFS= read -r tag; do
+              [[ -n "${tag}" ]] || continue
+              if inspection="$(docker buildx imagetools inspect "${tag}" 2>&1)"; then
+                echo "refusing to overwrite immutable release image ${tag}" >&2
+                exit 1
+              elif [[ "${inspection}" != *"not found"* \
+                && "${inspection}" != *"manifest unknown"* ]]; then
+                printf '%s\n' "${inspection}" >&2
+                echo "could not prove immutable tag ${tag} is absent" >&2
+                exit 1
+              fi
+              docker buildx imagetools create --tag "${tag}" "${image}@${digest}"
+              promoted="$(docker buildx imagetools inspect "${tag}" \
+                | awk '$1 == "Digest:" { print $2; exit }')"
+              test "${promoted}" = "${digest}"
+            done
+          done
+      - name: Upload every asset to a hidden draft release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ needs.preflight.outputs.tag }}
           generate_release_notes: true
+          draft: true
+          prerelease: ${{ needs.preflight.outputs.prerelease == 'true' }}
           fail_on_unmatched_files: true
           files: dist/*
+      - name: Publish the complete release atomically
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          gh release edit "${RELEASE_TAG}" \
+            --draft=false \
+            --prerelease="${PRERELEASE}"

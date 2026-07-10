@@ -4,9 +4,11 @@ use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
     net::IpAddr,
-    os::unix::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
 };
+
+#[cfg(unix)]
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
 use clap::ValueEnum;
 use codex_start_core::ResourceLimits;
@@ -280,6 +282,17 @@ const HELP_CAPABILITIES: &[HelpCapability] = &[
 impl Runtime {
     /// Detect or validate the requested engine.
     pub fn detect(kind: RuntimeKind, override_program: Option<&OsStr>) -> Result<Self> {
+        #[cfg(windows)]
+        if kind == RuntimeKind::Podman
+            || kind == RuntimeKind::Auto
+                && override_program
+                    .is_some_and(|program| infer_kind(program) == RuntimeKind::Podman)
+        {
+            return Err(HostError::Runtime(
+                "Podman is not supported by codex-start on Windows; use Docker Desktop with Linux containers"
+                    .to_owned(),
+            ));
+        }
         if let Some(program) = override_program {
             let inferred = match kind {
                 RuntimeKind::Auto => infer_kind(program),
@@ -296,6 +309,13 @@ impl Runtime {
         match kind {
             RuntimeKind::Docker => Self::from_program(RuntimeKind::Docker, "docker"),
             RuntimeKind::Podman => Self::from_program(RuntimeKind::Podman, "podman"),
+            #[cfg(windows)]
+            RuntimeKind::Auto => Self::from_program(RuntimeKind::Docker, "docker").map_err(|error| {
+                HostError::Runtime(format!(
+                    "no compatible Docker Desktop runtime was found: {error}"
+                ))
+            }),
+            #[cfg(not(windows))]
             RuntimeKind::Auto => match Self::from_program(RuntimeKind::Docker, "docker") {
                 Ok(runtime) => Ok(runtime),
                 Err(docker_error) => Self::from_program(RuntimeKind::Podman, "podman").map_err(
@@ -1243,7 +1263,7 @@ fn remote_environment_indicator(kind: RuntimeKind) -> Option<bool> {
 }
 
 fn identity_option(argument: &OsStr) -> bool {
-    let bytes = argument.as_bytes();
+    let bytes = argument.as_encoded_bytes();
     [
         b"--user".as_slice(),
         b"--userns".as_slice(),
@@ -1321,6 +1341,7 @@ fn infer_kind(program: &OsStr) -> RuntimeKind {
     }
 }
 
+#[cfg(unix)]
 fn render_mount(mount: &MountRequest) -> OsString {
     let kind = match mount.kind {
         MountKind::Bind => "bind",
@@ -1340,6 +1361,28 @@ fn render_mount(mount: &MountRequest) -> OsString {
     OsString::from_vec(rendered)
 }
 
+#[cfg(windows)]
+fn render_mount(mount: &MountRequest) -> OsString {
+    let kind = match mount.kind {
+        MountKind::Bind => "bind",
+        MountKind::Volume => "volume",
+        MountKind::Tmpfs => "tmpfs",
+    };
+    let mut rendered = format!("type={kind}");
+    if let Some(source) = &mount.source {
+        rendered.push_str(",src=");
+        append_mount_text(&mut rendered, &source.to_string_lossy());
+    }
+    rendered.push_str(",dst=");
+    let target = mount.target.to_string_lossy().replace('\\', "/");
+    append_mount_text(&mut rendered, &target);
+    if mount.read_only {
+        rendered.push_str(",readonly");
+    }
+    rendered.into()
+}
+
+#[cfg(unix)]
 fn prefixed_os_value(prefix: &[u8], separator: u8, value: &OsStr) -> OsString {
     let mut rendered = Vec::with_capacity(prefix.len() + value.as_bytes().len() + 1);
     rendered.extend_from_slice(prefix);
@@ -1348,6 +1391,15 @@ fn prefixed_os_value(prefix: &[u8], separator: u8, value: &OsStr) -> OsString {
     OsString::from_vec(rendered)
 }
 
+#[cfg(windows)]
+fn prefixed_os_value(prefix: &[u8], separator: u8, value: &OsStr) -> OsString {
+    let mut rendered = OsString::from(String::from_utf8_lossy(prefix).as_ref());
+    rendered.push(char::from(separator).to_string());
+    rendered.push(value);
+    rendered
+}
+
+#[cfg(unix)]
 fn append_mount_value(rendered: &mut Vec<u8>, value: &[u8]) {
     if value.iter().any(|byte| matches!(byte, b',' | b'"')) {
         rendered.push(b'"');
@@ -1363,7 +1415,18 @@ fn append_mount_value(rendered: &mut Vec<u8>, value: &[u8]) {
     }
 }
 
-#[cfg(test)]
+#[cfg(windows)]
+fn append_mount_text(rendered: &mut String, value: &str) {
+    if value.contains([',', '"']) {
+        rendered.push('"');
+        rendered.push_str(&value.replace('"', "\"\""));
+        rendered.push('"');
+    } else {
+        rendered.push_str(value);
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use std::{
         collections::BTreeMap,
@@ -1785,5 +1848,49 @@ mod tests {
         fs::write(&executable, script).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
         (root, executable)
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::{ffi::OsString, path::PathBuf};
+
+    use super::{MountKind, MountRequest, Runtime, RuntimeKind, render_mount};
+
+    fn rendered(source: &str) -> OsString {
+        render_mount(&MountRequest {
+            kind: MountKind::Bind,
+            source: Some(source.into()),
+            target: PathBuf::from("/workspaces/project"),
+            read_only: true,
+        })
+    }
+
+    #[test]
+    fn renders_windows_bind_sources_without_changing_container_paths() {
+        assert_eq!(
+            rendered(r"C:\Users\Codex Project"),
+            r"type=bind,src=C:\Users\Codex Project,dst=/workspaces/project,readonly"
+        );
+        assert_eq!(
+            rendered(r"C:\Users\Codex,Project"),
+            r#"type=bind,src="C:\Users\Codex,Project",dst=/workspaces/project,readonly"#
+        );
+        assert_eq!(
+            rendered(r"\\server\share\project"),
+            r"type=bind,src=\\server\share\project,dst=/workspaces/project,readonly"
+        );
+        assert_eq!(
+            rendered(r"\\?\C:\very long\project"),
+            r"type=bind,src=\\?\C:\very long\project,dst=/workspaces/project,readonly"
+        );
+    }
+
+    #[test]
+    fn rejects_podman_before_launching_a_process() {
+        let explicit = Runtime::detect(RuntimeKind::Podman, None).unwrap_err();
+        assert!(explicit.to_string().contains("Podman is not supported"));
+        let inferred = Runtime::detect(RuntimeKind::Auto, Some("podman.exe".as_ref())).unwrap_err();
+        assert!(inferred.to_string().contains("Podman is not supported"));
     }
 }

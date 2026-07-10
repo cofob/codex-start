@@ -3,9 +3,12 @@
 use std::{
     collections::BTreeMap,
     env, fs,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
 };
+
+#[cfg(unix)]
+use std::io::Read;
 
 const MAX_SECRET_BYTES: usize = 1_048_576;
 
@@ -148,7 +151,20 @@ fn resolve_source(source: &SecretSource) -> Result<SecretString> {
                 HostError::Config(format!("secret environment variable {name} is not set"))
             })?
         }
-        SecretSource::File { path } => read_secret_file(&expand_tilde(path)?)?,
+        SecretSource::File { path } => {
+            #[cfg(unix)]
+            {
+                read_secret_file(&expand_tilde(path)?)?
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = path;
+                return Err(HostError::Config(
+                    "file secret providers are not supported on Windows; use an environment or argv-only command provider"
+                        .to_owned(),
+                ));
+            }
+        }
         SecretSource::Command { argv } => {
             let (program, args) = argv.split_first().ok_or_else(|| {
                 HostError::Config("secret command argv must not be empty".to_owned())
@@ -197,7 +213,10 @@ fn resolve_keychain(_service: &str, _account: &str) -> Result<SecretString> {
     ))
 }
 
+#[cfg(unix)]
 fn read_secret_file(path: &Path) -> Result<SecretString> {
+    use std::os::unix::fs::PermissionsExt;
+
     let before = fs::symlink_metadata(path).map_err(|source| HostError::io(path, source))?;
     if !before.is_file() || before.file_type().is_symlink() {
         return Err(HostError::Config(format!(
@@ -220,15 +239,11 @@ fn read_secret_file(path: &Path) -> Result<SecretString> {
             path.display()
         )));
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if descriptor.permissions().mode() & 0o077 != 0 {
-            return Err(HostError::Config(format!(
-                "secret file {} must not be accessible by group or others",
-                path.display()
-            )));
-        }
+    if descriptor.permissions().mode() & 0o077 != 0 {
+        return Err(HostError::Config(format!(
+            "secret file {} must not be accessible by group or others",
+            path.display()
+        )));
     }
     if descriptor.len() > MAX_SECRET_BYTES as u64 {
         return Err(HostError::Config(format!(
@@ -255,13 +270,6 @@ fn read_secret_file(path: &Path) -> Result<SecretString> {
 fn same_file_identity(first: &fs::Metadata, second: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     first.dev() == second.dev() && first.ino() == second.ino()
-}
-
-#[cfg(not(unix))]
-fn same_file_identity(first: &fs::Metadata, second: &fs::Metadata) -> bool {
-    first.len() == second.len()
-        && first.modified().ok() == second.modified().ok()
-        && first.created().ok() == second.created().ok()
 }
 
 fn secret_from_output(mut output: CommandOutput, source: &str) -> Result<SecretString> {
@@ -313,6 +321,7 @@ fn run_secret_command(spec: &CommandSpec, description: &str) -> Result<CommandOu
     }
 }
 
+#[cfg(unix)]
 fn expand_tilde(path: &Path) -> Result<PathBuf> {
     let Some(value) = path.to_str() else {
         return Ok(path.to_path_buf());
@@ -363,18 +372,18 @@ const fn default_true() -> bool {
 mod tests {
     use std::{collections::BTreeMap, fs};
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     use super::{SecretBundle, SecretSource, SecretSpec};
 
+    #[cfg(unix)]
     #[test]
     fn resolves_file_secret_without_placing_value_in_map() {
         let root = tempfile::tempdir().expect("tempdir");
         let source = root.path().join("token");
         fs::write(&source, "sensitive\n").expect("write");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).expect("permissions");
-        }
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).expect("permissions");
         let definitions = BTreeMap::from([(
             "token".to_owned(),
             SecretSpec {
@@ -388,6 +397,25 @@ mod tests {
         let map = fs::read_to_string(bundle.directory.path().join("map.json")).expect("map");
         assert!(map.contains("TOKEN"));
         assert!(!map.contains("sensitive"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_rejects_file_secret_providers() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let source = root.path().join("token");
+        fs::write(&source, "sensitive\n").expect("write");
+        let definitions = BTreeMap::from([(
+            "token".to_owned(),
+            SecretSpec {
+                source: SecretSource::File { path: source },
+                target_env: Some("TOKEN".to_owned()),
+                required: true,
+            },
+        )]);
+        let error = SecretBundle::resolve(&definitions, &["token".to_owned()], root.path())
+            .expect_err("Windows file secrets must fail closed");
+        assert!(error.to_string().contains("not supported on Windows"));
     }
 
     #[cfg(unix)]

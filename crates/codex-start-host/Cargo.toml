@@ -19,11 +19,16 @@ clap.workspace = true
 codex-start-core = { version = "0.1.0", path = "../codex-start-core" }
 codex-start-proxy = { version = "0.1.0", path = "../codex-start-proxy" }
 dialoguer.workspace = true
+flate2.workspace = true
 fs2.workspace = true
 ratatui.workspace = true
+reqwest.workspace = true
 secrecy.workspace = true
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -35,6 +40,7 @@ url.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
 zeroize.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

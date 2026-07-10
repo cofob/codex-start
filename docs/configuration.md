@@ -47,6 +47,17 @@ The scalar settings are:
 | `allow_ssh_hosts` | Host-SSH authority rules; ports default to 22. |
 | `secret_refs` | Map child environment-variable names to global providers. |
 
+Automatic release checks are controlled by a global-only policy:
+
+```toml
+[settings.updates]
+enabled = true
+check_interval_hours = 24
+require_signature = false
+```
+
+`enabled` controls opportunistic interactive checks, not the explicit `codex-start update` command. `check_interval_hours` is the minimum interval between successful checks, and `require_signature` makes Cosign verification mandatory for updates. These host-global keys may be set by built-ins, global configuration, and `CODEX_START__UPDATES__...` environment variables; profiles, project documents, and environment manifests cannot set them. See [installation and update documentation](installation.md) for prompt, installer, and verification behavior.
+
 Persistent sessions are enabled by default:
 
 ```toml
@@ -208,7 +219,7 @@ Use `home import` and `home export` for deliberate migration. They take an exclu
 
 ## Secrets
 
-Only global configuration can define secret providers. Supported providers read a host environment variable, a permission-checked absolute file, the stdout of an argv-only command, or the native keychain. Project settings and environment manifests map an environment variable needed by Codex or another tool to a trusted provider name:
+Only global configuration can define secret providers. Supported providers read a host environment variable, a permission-checked absolute file, the stdout of an argv-only command, or the native keychain. On Windows, use environment or argv-only command providers; file and keychain providers are rejected. Project settings and environment manifests map an environment variable needed by Codex or another tool to a trusted provider name:
 
 ```toml
 [settings.secret_refs]

@@ -8,6 +8,8 @@ use std::{
 
 use tempfile::NamedTempFile;
 
+use codex_start_core::ContainerPath;
+
 use crate::error::{HostError, Result};
 
 /// All persistent and ephemeral application roots.
@@ -24,23 +26,56 @@ pub struct AppPaths {
 impl AppPaths {
     /// Resolve paths from XDG variables, with portable home-directory defaults.
     pub fn discover() -> Result<Self> {
-        let home = env::var_os("HOME")
-            .map(PathBuf::from)
-            .ok_or_else(|| HostError::Config("HOME is not set".to_owned()))?;
-        let config = env::var_os("XDG_CONFIG_HOME")
-            .map_or_else(|| home.join(".config"), PathBuf::from)
-            .join("codex-start");
-        let data = env::var_os("XDG_DATA_HOME")
-            .map_or_else(|| home.join(".local/share"), PathBuf::from)
-            .join("codex-start");
-        let cache = env::var_os("XDG_CACHE_HOME")
-            .map_or_else(|| home.join(".cache"), PathBuf::from)
-            .join("codex-start");
-        Ok(Self {
-            config,
-            data,
-            cache,
-        })
+        #[cfg(unix)]
+        {
+            let home = env::var_os("HOME")
+                .map(PathBuf::from)
+                .ok_or_else(|| HostError::Config("HOME is not set".to_owned()))?;
+            let config = env::var_os("XDG_CONFIG_HOME")
+                .map_or_else(|| home.join(".config"), PathBuf::from)
+                .join("codex-start");
+            let data = env::var_os("XDG_DATA_HOME")
+                .map_or_else(|| home.join(".local/share"), PathBuf::from)
+                .join("codex-start");
+            let cache = env::var_os("XDG_CACHE_HOME")
+                .map_or_else(|| home.join(".cache"), PathBuf::from)
+                .join("codex-start");
+            Ok(Self {
+                config,
+                data,
+                cache,
+            })
+        }
+        #[cfg(windows)]
+        {
+            let profile = env::var_os("USERPROFILE").map(PathBuf::from);
+            let config = env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .or_else(|| profile.as_ref().map(|path| path.join("AppData/Roaming")))
+                .ok_or_else(|| {
+                    HostError::Config(
+                        "APPDATA and USERPROFILE are not set; cannot locate configuration"
+                            .to_owned(),
+                    )
+                })?
+                .join("codex-start");
+            let data = env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .or_else(|| profile.as_ref().map(|path| path.join("AppData/Local")))
+                .ok_or_else(|| {
+                    HostError::Config(
+                        "LOCALAPPDATA and USERPROFILE are not set; cannot locate application data"
+                            .to_owned(),
+                    )
+                })?
+                .join("codex-start");
+            let cache = data.join("cache");
+            Ok(Self {
+                config,
+                data,
+                cache,
+            })
+        }
     }
 
     /// Ensure application roots exist with user-only permissions on Unix.
@@ -156,6 +191,8 @@ pub fn create_private_dir(path: &Path) -> Result<()> {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))
             .map_err(|source| HostError::io(path, source))?;
     }
+    #[cfg(windows)]
+    restrict_windows_acl(path, true)?;
     Ok(())
 }
 
@@ -173,6 +210,53 @@ pub fn set_private_file(path: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))
             .map_err(|source| HostError::io(path, source))?;
+    }
+    #[cfg(windows)]
+    restrict_windows_acl(path, false)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn restrict_windows_acl(path: &Path, directory: bool) -> Result<()> {
+    let identity = std::process::Command::new("whoami")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let user = env::var("USERNAME").ok()?;
+            env::var("USERDOMAIN")
+                .ok()
+                .filter(|domain| !domain.is_empty())
+                .map_or_else(
+                    || Some(user.clone()),
+                    |domain| Some(format!("{domain}\\{user}")),
+                )
+        })
+        .ok_or_else(|| {
+            HostError::Config("could not determine the current Windows identity".to_owned())
+        })?;
+    let grant = if directory {
+        format!("{identity}:(OI)(CI)F")
+    } else {
+        format!("{identity}:F")
+    };
+    let output = std::process::Command::new("icacls.exe")
+        .arg(path)
+        .args(["/inheritance:r", "/grant:r"])
+        .arg(grant)
+        .output()
+        .map_err(|source| HostError::CommandIo {
+            program: "icacls.exe".into(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(HostError::Runtime(format!(
+            "could not restrict Windows ACL for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
     }
     Ok(())
 }
@@ -192,11 +276,66 @@ pub fn ensure_regular_file_or_missing(path: &Path) -> Result<bool> {
     }
 }
 
+/// Append trusted container path components with POSIX separators on every host.
+pub fn join_container_components<'a>(
+    base: &Path,
+    components: impl IntoIterator<Item = &'a str>,
+) -> Result<PathBuf> {
+    let mut path = ContainerPath::new(base).map_err(|error| {
+        HostError::Config(format!(
+            "invalid container path {}: {error}",
+            base.display()
+        ))
+    })?;
+    for component in components {
+        path = path.join_component(component).map_err(|error| {
+            HostError::Config(format!(
+                "invalid container path component {component:?}: {error}"
+            ))
+        })?;
+    }
+    Ok(path.into_path_buf())
+}
+
+/// Append a host-relative path to a container path using POSIX separators.
+pub fn join_container_relative(base: &Path, relative: &Path) -> Result<PathBuf> {
+    ContainerPath::new(base)
+        .and_then(|path| path.join_relative(relative))
+        .map(ContainerPath::into_path_buf)
+        .map_err(|error| {
+            HostError::Config(format!(
+                "cannot append {} to container path {}: {error}",
+                relative.display(),
+                base.display()
+            ))
+        })
+}
+
+/// Return the POSIX parent of a validated non-root container path.
+pub fn container_parent(path: &Path) -> Result<PathBuf> {
+    let path = ContainerPath::new(path).map_err(|error| {
+        HostError::Config(format!(
+            "invalid container path {}: {error}",
+            path.display()
+        ))
+    })?;
+    let (parent, _) = path
+        .as_str()
+        .rsplit_once('/')
+        .ok_or_else(|| HostError::Config(format!("container path {path} has no parent")))?;
+    let parent = if parent.is_empty() { "/" } else { parent };
+    ContainerPath::parse(parent)
+        .map(ContainerPath::into_path_buf)
+        .map_err(|error| HostError::Config(format!("invalid container parent {parent}: {error}")))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use super::{atomic_write, create_private_dir};
+    use super::atomic_write;
+    #[cfg(unix)]
+    use super::create_private_dir;
 
     #[test]
     fn atomic_write_replaces_complete_contents() {

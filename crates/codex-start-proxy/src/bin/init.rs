@@ -1,5 +1,4 @@
-//! Container init and local authenticated-tunnel helper.
-
+// Container init and local authenticated-tunnel helper.
 use std::{
     ffi::OsString, net::SocketAddr, os::unix::ffi::OsStringExt, path::PathBuf, time::Duration,
 };

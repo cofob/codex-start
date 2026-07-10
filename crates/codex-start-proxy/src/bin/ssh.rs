@@ -1,5 +1,4 @@
-//! OpenSSH wrapper that applies forwarded configuration without a shell.
-
+// OpenSSH wrapper that applies forwarded configuration without a shell.
 use std::{
     env,
     ffi::{OsStr, OsString},

@@ -23,6 +23,7 @@ mod paths;
 mod runtime;
 mod secrets;
 mod session;
+mod update;
 
 use std::process::ExitCode;
 

@@ -139,15 +139,43 @@ pub struct AppPaths {
 impl AppPaths {
     /// Resolve from the current process environment using XDG variables when set.
     pub fn discover() -> Result<Self, ProjectError> {
-        let home = directories::BaseDirs::new()
-            .map(|directories| directories.home_dir().to_path_buf())
-            .ok_or(ProjectError::HomeUnavailable)?;
-        Self::from_roots(
-            &home,
-            std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
-            std::env::var_os("XDG_DATA_HOME").map(PathBuf::from),
-            std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
-        )
+        #[cfg(unix)]
+        {
+            let home = directories::BaseDirs::new()
+                .map(|directories| directories.home_dir().to_path_buf())
+                .ok_or(ProjectError::HomeUnavailable)?;
+            Self::from_roots(
+                &home,
+                std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+                std::env::var_os("XDG_DATA_HOME").map(PathBuf::from),
+                std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
+            )
+        }
+        #[cfg(windows)]
+        {
+            let home = directories::BaseDirs::new()
+                .map(|directories| directories.home_dir().to_path_buf())
+                .ok_or(ProjectError::HomeUnavailable)?;
+            let config = std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join("AppData/Roaming"))
+                .join("codex-start");
+            let data = std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join("AppData/Local"))
+                .join("codex-start");
+            let cache = data.join("cache");
+            Ok(Self {
+                environments: config.join("environments"),
+                projects: config.join("projects"),
+                homes: data.join("homes"),
+                worktrees: data.join("worktrees"),
+                runtime: cache.join("runtime"),
+                config,
+                data,
+                cache,
+            })
+        }
     }
 
     /// Deterministic constructor used by tests and embedding applications.

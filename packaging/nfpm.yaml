@@ -1,0 +1,40 @@
+name: codex-start
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${NFPM_VERSION}
+version_schema: semver
+release: "1"
+section: utils
+priority: optional
+maintainer: Codex Start contributors
+description: Run Codex in reproducible Docker or Podman development environments
+vendor: Codex Start contributors
+homepage: https://github.com/cofob/codex-start
+license: GPL-3.0-or-later
+
+contents:
+  - src: ${NFPM_BINARY}
+    dst: /usr/bin/codex-start
+    expand: true
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+  - src: README.md
+    dst: /usr/share/doc/codex-start/README.md
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+  - src: LICENSE
+    dst: /usr/share/licenses/codex-start/LICENSE
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+  - src: LICENSE-NOTICE
+    dst: /usr/share/licenses/codex-start/LICENSE-NOTICE
+    file_info:
+      mode: 0644
+      owner: root
+      group: root

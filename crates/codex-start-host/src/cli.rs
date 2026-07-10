@@ -65,9 +65,39 @@ pub enum Command {
     Config(ConfigArgs),
     /// Diagnose host, runtime, image, and Codex compatibility.
     Doctor(DoctorArgs),
+    /// Check for or install the latest stable codex-start release.
+    Update(UpdateArgs),
+    /// Complete a staged Windows executable replacement.
+    #[command(name = "__apply-update", hide = true)]
+    UpdateApply(UpdateApplyArgs),
     /// Legacy invocation: the first value is an environment and the remainder are Codex args.
     #[command(external_subcommand)]
     External(Vec<OsString>),
+}
+
+/// Host-binary update options.
+#[derive(Clone, Copy, Debug, Args)]
+pub struct UpdateArgs {
+    /// Only report whether a newer stable release is available.
+    #[arg(long)]
+    pub check: bool,
+    /// Install without an interactive confirmation prompt.
+    #[arg(long)]
+    pub yes: bool,
+    /// Require keyless Sigstore verification in addition to SHA-256.
+    #[arg(long)]
+    pub require_signature: bool,
+}
+
+/// Private arguments used by a copied updater process on Windows.
+#[derive(Clone, Debug, Args)]
+pub struct UpdateApplyArgs {
+    #[arg(long)]
+    pub source: PathBuf,
+    #[arg(long)]
+    pub destination: PathBuf,
+    #[arg(long)]
+    pub arguments: PathBuf,
 }
 
 /// Output serialization format.
@@ -846,6 +876,24 @@ mod tests {
         assert!(matches!(
             set.command,
             Some(Command::Config(args)) if args.command.is_some()
+        ));
+    }
+
+    #[test]
+    fn update_command_supports_check_noninteractive_and_signature_modes() {
+        let check =
+            Cli::try_parse_from(["codex-start", "update", "--check"]).expect("update check parse");
+        assert!(matches!(
+            check.command,
+            Some(Command::Update(args)) if args.check && !args.yes && !args.require_signature
+        ));
+
+        let install =
+            Cli::try_parse_from(["codex-start", "update", "--yes", "--require-signature"])
+                .expect("update install parse");
+        assert!(matches!(
+            install.command,
+            Some(Command::Update(args)) if !args.check && args.yes && args.require_signature
         ));
     }
 

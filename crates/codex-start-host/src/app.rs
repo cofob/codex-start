@@ -50,6 +50,7 @@ use crate::{
     networking::{
         EgressAuthentication, NetworkOptions, NetworkSession, limited_name, sidecar_image_tag,
     },
+    paths::{container_parent, join_container_components, join_container_relative},
     runtime::{MountKind, MountRequest, PublishRequest, RunRequest, Runtime, RuntimeKind},
     secrets::{SecretBundle, SecretSource, SecretSpec},
     session::{SessionKind, SessionRecord, SessionStatus, SessionStore, current_ssh_socket},
@@ -68,7 +69,14 @@ const APP_SERVER_ENDPOINT: &str = "unix:///tmp/codex-start-app-server.sock";
 pub async fn run(cli: Cli) -> Result<u8> {
     initialize_logging(cli.verbose, cli.quiet, cli.output);
     let output = cli.output;
+    if let Some(Command::UpdateApply(args)) = cli.command.clone() {
+        return crate::update::apply_staged(args);
+    }
     let context = ConfigContext::discover(cli.config.as_deref())?;
+    crate::update::cleanup_stale(&context);
+    if crate::update::maybe_prompt(&context, &cli).await? {
+        return Ok(0);
+    }
     if let Some(action) = legacy_action(&cli.legacy)? {
         return dispatch_legacy(action, &cli, &context).await;
     }
@@ -97,6 +105,8 @@ pub async fn run(cli: Cli) -> Result<u8> {
         },
         Some(Command::Config(args)) => execute_config(&context, args.command, output),
         Some(Command::Doctor(args)) => execute_doctor(&context, args, output),
+        Some(Command::Update(args)) => crate::update::execute(&context, args, output).await,
+        Some(Command::UpdateApply(_)) => unreachable!("handled before configuration discovery"),
         Some(Command::External(values)) => {
             let (first, remainder) = values.split_first().ok_or_else(|| {
                 HostError::Usage("legacy invocation requires an environment".to_owned())
@@ -613,13 +623,12 @@ fn prepare_merge_command(
         repo.prepare_agent_merge(&worktree_base, &config.git.branch_prefix, &args.sources)?;
     let mut run_args = merge_run_args(args.environment, args.options);
     let initial = resolve_run_with_config(context, &run_args, RunKind::Codex, config.clone())?;
-    let container_workspace = initial
-        .environment
-        .workdir
-        .join(&initial.project_id)
-        .join(&initial.planned_name);
+    let container_workspace = join_container_components(
+        &initial.environment.workdir,
+        [&*initial.project_id, &*initial.planned_name],
+    )?;
     config.workdir = Some(container_workspace.clone());
-    let source_mounts = merge_source_mounts(&task, &initial, &container_workspace);
+    let source_mounts = merge_source_mounts(&task, &initial, &container_workspace)?;
     let prompt = merge_agent_prompt(&task, &source_mounts)?;
     run_args.codex_args = merge_codex_args(&config.merge.model, &container_workspace, prompt);
     let mut launch = resolve_run_with_config(context, &run_args, RunKind::Codex, config)?;
@@ -753,17 +762,18 @@ fn merge_source_mounts(
     task: &AgentMergeTask,
     launch: &ResolvedRun,
     container_workspace: &Path,
-) -> Vec<MergeSourceMount> {
-    let parent = container_workspace
-        .parent()
-        .unwrap_or(&launch.environment.workdir);
+) -> Result<Vec<MergeSourceMount>> {
+    let parent = container_parent(container_workspace)?;
     task.sources
         .iter()
         .enumerate()
         .filter_map(|(index, source)| {
-            source.worktree.as_ref().map(|host| MergeSourceMount {
-                host: host.clone(),
-                container: parent.join(format!("{}-source-{index}", launch.planned_name)),
+            source.worktree.as_ref().map(|host| {
+                let name = format!("{}-source-{index}", launch.planned_name);
+                join_container_components(&parent, [&*name]).map(|container| MergeSourceMount {
+                    host: host.clone(),
+                    container,
+                })
             })
         })
         .collect()
@@ -970,16 +980,14 @@ fn start_persistent_run(
         .cwd
         .strip_prefix(context.project_root())
         .unwrap_or(Path::new(""));
-    let container_workspace = launch
-        .environment
-        .workdir
-        .join(&launch.project_id)
-        .join(&record.alias);
-    let container_workdir = launch
-        .config
-        .workdir
-        .clone()
-        .unwrap_or_else(|| container_workspace.join(relative_cwd));
+    let container_workspace = join_container_components(
+        &launch.environment.workdir,
+        [&*launch.project_id, &*record.alias],
+    )?;
+    let container_workdir = match launch.config.workdir.clone() {
+        Some(workdir) => workdir,
+        None => join_container_relative(&container_workspace, relative_cwd)?,
+    };
     record.container_workdir = UnixArgument::from(container_workdir.as_os_str());
     if session_kind == SessionKind::Interactive {
         let new_client = workload_command(
@@ -1041,6 +1049,16 @@ fn start_persistent_run(
     {
         use std::os::unix::process::CommandExt;
         worker.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        // Keep persistent session workers independent of the invoking console
+        // and prevent Ctrl-C intended for the client from terminating them.
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        worker.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
     let child = match worker.spawn() {
         Ok(child) => child,
@@ -1354,17 +1372,14 @@ fn prepare_runtime_run(
     } else {
         workspace.name.clone()
     };
-    let container_workspace = launch
-        .environment
-        .workdir
-        .clone()
-        .join(&launch.project_id)
-        .join(&session_name);
-    let container_workdir = launch
-        .config
-        .workdir
-        .clone()
-        .unwrap_or_else(|| container_workspace.join(&workspace.relative_cwd));
+    let container_workspace = join_container_components(
+        &launch.environment.workdir,
+        [&*launch.project_id, &*session_name],
+    )?;
+    let container_workdir = match launch.config.workdir.clone() {
+        Some(workdir) => workdir,
+        None => join_container_relative(&container_workspace, &workspace.relative_cwd)?,
+    };
     let run_name = container_name(
         &launch.environment.name,
         context
@@ -2108,11 +2123,8 @@ fn preview_topology(options: &PreviewPlanOptions<'_>) -> Result<PreviewTopology>
     } else {
         workspace_name
     };
-    let container_workspace = environment
-        .workdir
-        .clone()
-        .join(options.project_id)
-        .join(&workspace_name);
+    let container_workspace =
+        join_container_components(&environment.workdir, [options.project_id, &*workspace_name])?;
     let relative_cwd = context.repo.as_ref().map_or_else(
         || {
             context
@@ -2123,10 +2135,10 @@ fn preview_topology(options: &PreviewPlanOptions<'_>) -> Result<PreviewTopology>
         },
         |repo| repo.relative_cwd.clone(),
     );
-    let container_workdir = config
-        .workdir
-        .clone()
-        .unwrap_or_else(|| container_workspace.join(relative_cwd));
+    let container_workdir = match config.workdir.clone() {
+        Some(workdir) => workdir,
+        None => join_container_relative(&container_workspace, &relative_cwd)?,
+    };
     let run_name = container_name(
         &environment.name,
         context
@@ -3322,6 +3334,7 @@ struct DoctorCheck {
     detail: String,
 }
 
+#[allow(clippy::too_many_lines)]
 fn execute_doctor(context: &ConfigContext, args: DoctorArgs, output: OutputFormat) -> Result<u8> {
     let mut checks = Vec::new();
     let resolved = context.resolve(None)?;
@@ -3338,8 +3351,17 @@ fn execute_doctor(context: &ConfigContext, args: DoctorArgs, output: OutputForma
     });
     checks.push(home_doctor_check(&resolved.config));
     if resolved.config.sessions.enabled {
-        let (enabled, service) = crate::session::recovery_installation(context)?;
+        #[cfg(windows)]
         checks.push(DoctorCheck {
+            name: "session-recovery".to_owned(),
+            status: "warning",
+            detail: "persistent sessions survive terminal loss, but cross-reboot recovery is unsupported on Windows"
+                .to_owned(),
+        });
+        #[cfg(not(windows))]
+        {
+            let (enabled, service) = crate::session::recovery_installation(context)?;
+            checks.push(DoctorCheck {
             name: "session-recovery".to_owned(),
             status: if enabled { "ok" } else { "warning" },
             detail: if enabled {
@@ -3348,6 +3370,7 @@ fn execute_doctor(context: &ConfigContext, args: DoctorArgs, output: OutputForma
                 "not enabled; terminal-loss recovery works, but cross-reboot reconciliation requires `codex-start session recovery enable`".to_owned()
             },
         });
+        }
     }
     if let Some(repo) = &context.repo {
         checks.push(DoctorCheck {
@@ -4112,6 +4135,7 @@ fn join_runtime_task(
     result.map_err(|error| HostError::Runtime(format!("runtime task failed: {error}")))?
 }
 
+#[cfg(unix)]
 async fn termination_signal() {
     let interrupt = tokio::signal::ctrl_c();
     match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
@@ -4124,6 +4148,11 @@ async fn termination_signal() {
             let _ = interrupt.await;
         }
     }
+}
+
+#[cfg(windows)]
+async fn termination_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 fn emit<T: Serialize>(output: OutputFormat, value: &T, human: &str) -> Result<()> {
@@ -4458,6 +4487,7 @@ mod tests {
             proxy: ProxyConfig::default(),
             resources: codex_start_core::ResourceLimits::default(),
             sessions: codex_start_core::SessionConfig::default(),
+            updates: codex_start_core::UpdateConfig::default(),
             codex: CodexConfig {
                 profile: None,
                 args: Vec::new(),

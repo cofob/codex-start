@@ -40,8 +40,6 @@ impl AuthToken {
     /// Returns an error when the file cannot be read or its contents are not a
     /// valid token.
     pub fn from_file(path: &Path) -> Result<Self, AuthTokenError> {
-        use std::os::unix::fs::MetadataExt;
-
         let metadata = std::fs::symlink_metadata(path).map_err(|source| AuthTokenError::Read {
             path: path.to_owned(),
             source,
@@ -49,11 +47,16 @@ impl AuthToken {
         if !metadata.file_type().is_file() {
             return Err(AuthTokenError::NotRegular(path.to_owned()));
         }
-        if metadata.mode() & 0o077 != 0 {
-            return Err(AuthTokenError::InsecurePermissions {
-                path: path.to_owned(),
-                mode: metadata.mode() & 0o777,
-            });
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            if metadata.mode() & 0o077 != 0 {
+                return Err(AuthTokenError::InsecurePermissions {
+                    path: path.to_owned(),
+                    mode: metadata.mode() & 0o777,
+                });
+            }
         }
         if metadata.len() > (MAX_TOKEN_BYTES + 2) as u64 {
             return Err(AuthTokenError::TooLong {
@@ -144,6 +147,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn file_loader_removes_one_newline() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -155,6 +159,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn file_loader_rejects_public_permissions_and_symlinks() {
         use std::os::unix::fs::{PermissionsExt, symlink};
 

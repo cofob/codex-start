@@ -671,8 +671,13 @@ fn environment_error(error: impl std::fmt::Display) -> HostError {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::Path};
+    #[cfg(unix)]
+    use std::{collections::BTreeMap, fs, path::Path};
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(unix)]
     use codex_start_core::{EnvironmentManifest, EnvironmentRegistry, ManifestSource};
 
     use super::{EnvironmentCatalog, cache_volume_name};
@@ -738,6 +743,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn environment_tag_tracks_entry_type_target_and_mode() {
         let root = tempfile::tempdir().expect("root");
         let (catalog, environment) = custom_catalog(root.path());
@@ -764,6 +770,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn environment_tag_rejects_symlinks_outside_the_context() {
         let root = tempfile::tempdir().expect("root");
         let (catalog, environment) = custom_catalog(root.path());
@@ -775,6 +782,7 @@ mod tests {
         assert!(matches!(error, crate::error::HostError::UnsafePath { .. }));
     }
 
+    #[cfg(unix)]
     fn custom_catalog(root: &Path) -> (EnvironmentCatalog, codex_start_core::ResolvedEnvironment) {
         let context = root.join("context");
         fs::create_dir_all(&context).expect("context");

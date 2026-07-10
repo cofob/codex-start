@@ -867,6 +867,19 @@ fn copy_untracked(source: &Path, target: &Path) -> Result<()> {
             let link = fs::read_link(&from).map_err(|error| HostError::io(&from, error))?;
             #[cfg(unix)]
             std::os::unix::fs::symlink(link, &to).map_err(|error| HostError::io(&to, error))?;
+            #[cfg(windows)]
+            {
+                let target = from.parent().unwrap_or(source).join(&link);
+                let target_is_dir = fs::metadata(&target)
+                    .map_err(|error| HostError::io(&target, error))?
+                    .is_dir();
+                if target_is_dir {
+                    std::os::windows::fs::symlink_dir(link, &to)
+                } else {
+                    std::os::windows::fs::symlink_file(link, &to)
+                }
+                .map_err(|error| HostError::io(&to, error))?;
+            }
         } else if metadata.is_file() {
             fs::copy(&from, &to).map_err(|error| HostError::io(&to, error))?;
             fs::set_permissions(&to, metadata.permissions())
@@ -919,6 +932,11 @@ fn ensure_safe_parent(root: &Path, relative: &Path) -> Result<()> {
 fn bytes_to_path(bytes: &[u8]) -> PathBuf {
     use std::os::unix::ffi::OsStrExt;
     PathBuf::from(OsStr::from_bytes(bytes))
+}
+
+#[cfg(windows)]
+fn bytes_to_path(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
 fn ensure_distinct(left: &Path, right: &Path) -> Result<()> {
@@ -1027,9 +1045,9 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{
-        GitRepo, WorktreeMode, ensure_safe_parent, sanitize_branch_component, sanitize_name,
-    };
+    #[cfg(unix)]
+    use super::ensure_safe_parent;
+    use super::{GitRepo, WorktreeMode, sanitize_branch_component, sanitize_name};
     use crate::command::{CommandSpec, run_checked};
 
     fn git(path: &Path, args: &[&str]) {

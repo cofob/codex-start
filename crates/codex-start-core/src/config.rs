@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
+use crate::container_path::ContainerPath;
+
 /// Current on-disk configuration schema.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 /// Prefix used for nested environment overrides.
@@ -99,7 +101,61 @@ impl Default for SessionConfig {
         Self {
             enabled: true,
             on_tui_exit: SessionExitBehavior::Prompt,
-            refresh_ssh_on_attach: true,
+            refresh_ssh_on_attach: cfg!(unix),
+        }
+    }
+}
+
+impl From<SessionPatch> for SessionConfig {
+    fn from(patch: SessionPatch) -> Self {
+        Self {
+            enabled: patch.enabled.unwrap_or(true),
+            on_tui_exit: patch.on_tui_exit.unwrap_or_default(),
+            refresh_ssh_on_attach: patch.refresh_ssh_on_attach.unwrap_or(cfg!(unix)),
+        }
+    }
+}
+
+/// Partial host-binary update policy used in one configuration layer.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdatePatch {
+    /// Perform periodic interactive checks for a newer stable release.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Minimum time between successful automatic checks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_interval_hours: Option<u64>,
+    /// Refuse updates that cannot be verified with a Sigstore bundle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_signature: Option<bool>,
+}
+
+/// Fully resolved host-binary update policy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateConfig {
+    pub enabled: bool,
+    pub check_interval_hours: u64,
+    pub require_signature: bool,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            check_interval_hours: 24,
+            require_signature: false,
+        }
+    }
+}
+
+impl From<UpdatePatch> for UpdateConfig {
+    fn from(patch: UpdatePatch) -> Self {
+        Self {
+            enabled: patch.enabled.unwrap_or(true),
+            check_interval_hours: patch.check_interval_hours.unwrap_or(24),
+            require_signature: patch.require_signature.unwrap_or(false),
         }
     }
 }
@@ -293,9 +349,9 @@ pub struct ForwardingConfig {
 impl Default for ForwardingConfig {
     fn default() -> Self {
         Self {
-            ssh_agent: true,
+            ssh_agent: cfg!(unix),
             ssh_agent_bridge: SshAgentBridge::Auto,
-            gpg_agent: true,
+            gpg_agent: cfg!(unix),
             git_config: true,
             known_hosts: true,
             host_ssh: true,
@@ -1226,6 +1282,8 @@ pub struct ConfigPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions: Option<SessionPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub updates: Option<UpdatePatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub codex: Option<CodexPatch>,
 }
 
@@ -1241,9 +1299,9 @@ impl ConfigPatch {
             rebuild: Some(false),
             tty: Some(TtyMode::Auto),
             forwarding: Some(ForwardingPatch {
-                ssh_agent: Some(true),
+                ssh_agent: Some(cfg!(unix)),
                 ssh_agent_bridge: Some(SshAgentBridge::Auto),
-                gpg_agent: Some(true),
+                gpg_agent: Some(cfg!(unix)),
                 git_config: Some(true),
                 known_hosts: Some(true),
                 host_ssh: Some(true),
@@ -1279,7 +1337,12 @@ impl ConfigPatch {
             sessions: Some(SessionPatch {
                 enabled: Some(true),
                 on_tui_exit: Some(SessionExitBehavior::Prompt),
-                refresh_ssh_on_attach: Some(true),
+                refresh_ssh_on_attach: Some(cfg!(unix)),
+            }),
+            updates: Some(UpdatePatch {
+                enabled: Some(true),
+                check_interval_hours: Some(24),
+                require_signature: Some(false),
             }),
             codex: Some(CodexPatch {
                 config: BTreeMap::from([
@@ -1410,6 +1473,9 @@ impl ConfigDocument {
         }
         validate_patch(&self.settings)?;
         for profile in self.profiles.values() {
+            if profile.settings.updates.is_some() {
+                return Err(ConfigError::ProfileUpdates);
+            }
             validate_patch(&profile.settings)?;
         }
         Ok(())
@@ -1419,6 +1485,9 @@ impl ConfigDocument {
         self.validate()?;
         if !self.profiles.is_empty() || !self.homes.is_empty() || !self.secrets.is_empty() {
             return Err(ConfigError::ProjectDefinitions);
+        }
+        if self.settings.updates.is_some() {
+            return Err(ConfigError::ProjectUpdates);
         }
         Ok(())
     }
@@ -1450,6 +1519,7 @@ pub struct EffectiveConfig {
     pub proxy: ProxyConfig,
     pub resources: ResourceLimits,
     pub sessions: SessionConfig,
+    pub updates: UpdateConfig,
     pub codex: CodexConfig,
     pub homes: BTreeMap<String, HomeConfig>,
     #[serde(skip_serializing, default)]
@@ -1853,6 +1923,7 @@ fn record_leaves(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn effective_from_patch(
     patch: ConfigPatch,
     selected_profile: Option<String>,
@@ -1870,7 +1941,26 @@ fn effective_from_patch(
     let proxy = patch.proxy.unwrap_or_default();
     let resources = patch.resources.unwrap_or_default();
     let sessions = patch.sessions.unwrap_or_default();
+    let updates = patch.updates.unwrap_or_default();
     let codex = patch.codex.unwrap_or_default();
+    #[cfg(windows)]
+    {
+        if forwarding.ssh_agent == Some(true) {
+            return Err(ConfigError::Invalid(
+                "forwarding.ssh_agent is unsupported on Windows".to_owned(),
+            ));
+        }
+        if forwarding.gpg_agent == Some(true) {
+            return Err(ConfigError::Invalid(
+                "forwarding.gpg_agent is unsupported on Windows".to_owned(),
+            ));
+        }
+        if sessions.refresh_ssh_on_attach == Some(true) {
+            return Err(ConfigError::Invalid(
+                "sessions.refresh_ssh_on_attach is unsupported on Windows".to_owned(),
+            ));
+        }
+    }
     Ok(EffectiveConfig {
         schema_version: CONFIG_SCHEMA_VERSION,
         selected_profile,
@@ -1889,9 +1979,9 @@ fn effective_from_patch(
         allow_ssh_hosts: patch.allow_ssh_hosts.unwrap_or_default(),
         secret_refs: patch.secret_refs,
         forwarding: ForwardingConfig {
-            ssh_agent: forwarding.ssh_agent.unwrap_or(true),
+            ssh_agent: forwarding.ssh_agent.unwrap_or(cfg!(unix)),
             ssh_agent_bridge: forwarding.ssh_agent_bridge.unwrap_or_default(),
-            gpg_agent: forwarding.gpg_agent.unwrap_or(true),
+            gpg_agent: forwarding.gpg_agent.unwrap_or(cfg!(unix)),
             git_config: forwarding.git_config.unwrap_or(true),
             known_hosts: forwarding.known_hosts.unwrap_or(true),
             host_ssh: forwarding.host_ssh.unwrap_or(true),
@@ -1931,11 +2021,8 @@ fn effective_from_patch(
             handshake_timeout_seconds: proxy.handshake_timeout_seconds.unwrap_or(5),
         },
         resources: resources.into(),
-        sessions: SessionConfig {
-            enabled: sessions.enabled.unwrap_or(true),
-            on_tui_exit: sessions.on_tui_exit.unwrap_or_default(),
-            refresh_ssh_on_attach: sessions.refresh_ssh_on_attach.unwrap_or(true),
-        },
+        sessions: sessions.into(),
+        updates: updates.into(),
         codex: CodexConfig {
             profile: codex.profile,
             args: codex.args.unwrap_or_default(),
@@ -1947,6 +2034,16 @@ fn effective_from_patch(
 }
 
 fn validate_patch(patch: &ConfigPatch) -> Result<(), ConfigError> {
+    if patch
+        .updates
+        .as_ref()
+        .and_then(|updates| updates.check_interval_hours)
+        .is_some_and(|hours| !(1..=720).contains(&hours))
+    {
+        return Err(ConfigError::Invalid(
+            "updates.check_interval_hours must be between 1 and 720".into(),
+        ));
+    }
     if patch
         .environment
         .as_ref()
@@ -1971,7 +2068,7 @@ fn validate_patch(patch: &ConfigPatch) -> Result<(), ConfigError> {
     if patch
         .workdir
         .as_ref()
-        .is_some_and(|path| !path.is_absolute())
+        .is_some_and(|path| ContainerPath::new(path).is_err())
     {
         return Err(ConfigError::Invalid("workdir must be absolute".into()));
     }
@@ -2070,14 +2167,7 @@ fn validate_forwarding_patch(forwarding: &ForwardingPatch) -> Result<(), ConfigE
         }
     }
     if forwarding.container_ssh_dir.as_ref().is_some_and(|path| {
-        !path.is_absolute()
-            || path.components().any(|component| {
-                matches!(
-                    component,
-                    std::path::Component::CurDir | std::path::Component::ParentDir
-                )
-            })
-            || !path.starts_with("/home/codex")
+        ContainerPath::new(path).map_or(true, |path| !path.starts_with("/home/codex"))
     }) {
         return Err(ConfigError::Invalid(
             "forwarding.container_ssh_dir must be an absolute path below /home/codex".into(),
@@ -2517,6 +2607,10 @@ fn unknown_field_suggestion(message: &str) -> Option<String> {
         "header_timeout_seconds",
         "max_header_bytes",
         "handshake_timeout_seconds",
+        "updates",
+        "enabled",
+        "check_interval_hours",
+        "require_signature",
     ];
     let marker = "unknown field `";
     let start = message.find(marker)? + marker.len();
@@ -2561,6 +2655,10 @@ pub enum ConfigError {
     Invalid(String),
     #[error("profiles, homes, and secrets are not allowed in project configuration")]
     ProjectDefinitions,
+    #[error("host-binary update settings are not allowed in project configuration")]
+    ProjectUpdates,
+    #[error("host-binary update settings are global and are not allowed in profiles")]
+    ProfileUpdates,
     #[error("profiles, homes, and secrets may be declared only in global configuration")]
     DefinitionsOutsideGlobal,
     #[error("profile `{0}` is not defined")]
@@ -2596,7 +2694,7 @@ mod tests {
             defaults.config.sessions.on_tui_exit,
             SessionExitBehavior::Prompt
         );
-        assert!(defaults.config.sessions.refresh_ssh_on_attach);
+        assert_eq!(defaults.config.sessions.refresh_ssh_on_attach, cfg!(unix));
 
         let mut resolver = ConfigResolver::new();
         resolver
@@ -2620,6 +2718,55 @@ mod tests {
                 .sessions
                 .enabled
         );
+    }
+
+    #[test]
+    fn update_checks_default_on_and_support_typed_overrides() {
+        let defaults = ConfigResolver::new().resolve().expect("defaults");
+        assert!(defaults.config.updates.enabled);
+        assert_eq!(defaults.config.updates.check_interval_hours, 24);
+        assert!(!defaults.config.updates.require_signature);
+
+        let mut resolver = ConfigResolver::new();
+        resolver
+            .add_environment_overrides([
+                ("CODEX_START__UPDATES__ENABLED", "false"),
+                ("CODEX_START__UPDATES__CHECK_INTERVAL_HOURS", "168"),
+                ("CODEX_START__UPDATES__REQUIRE_SIGNATURE", "true"),
+            ])
+            .expect("update overrides");
+        let effective = resolver.resolve().expect("resolved");
+        assert!(!effective.config.updates.enabled);
+        assert_eq!(effective.config.updates.check_interval_hours, 168);
+        assert!(effective.config.updates.require_signature);
+    }
+
+    #[test]
+    fn update_interval_is_bounded_and_project_cannot_set_host_policy() {
+        assert!(
+            ConfigPatch {
+                updates: Some(UpdatePatch {
+                    check_interval_hours: Some(0),
+                    ..UpdatePatch::default()
+                }),
+                ..ConfigPatch::default()
+            }
+            .validate()
+            .is_err()
+        );
+        let project = ConfigDocument::parse("[settings.updates]\nenabled=false\n", "project")
+            .expect("syntactically valid");
+        assert!(matches!(
+            project.validate_as_project(),
+            Err(ConfigError::ProjectUpdates)
+        ));
+        assert!(matches!(
+            ConfigDocument::parse(
+                "[profiles.release.settings.updates]\nenabled=true\n",
+                "profile"
+            ),
+            Err(ConfigError::ProfileUpdates)
+        ));
     }
 
     #[test]

@@ -757,11 +757,13 @@ fn recovery_service_path(context: &ConfigContext) -> Result<PathBuf> {
     }
 }
 
+#[cfg(not(windows))]
 pub fn recovery_installation(context: &ConfigContext) -> Result<(bool, PathBuf)> {
     let path = recovery_service_path(context)?;
     Ok((ensure_regular_file_or_missing(&path)?, path))
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn install_recovery_service(path: &Path) -> Result<()> {
     let executable =
         env::current_exe().map_err(|source| HostError::io("current executable", source))?;
@@ -810,6 +812,13 @@ fn install_recovery_service(path: &Path) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn install_recovery_service(_path: &Path) -> Result<()> {
+    Err(HostError::Config(
+        "session recovery is supported only on macOS and Linux".to_owned(),
+    ))
 }
 
 fn uninstall_recovery_service(path: &Path) -> Result<()> {
@@ -943,6 +952,7 @@ fn wait_for_app_server(runtime: &Runtime, record: &SessionRecord) -> Result<()> 
     )))
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn command_success(command: &mut std::process::Command, label: &str) -> Result<()> {
     let status = command.status().map_err(|source| HostError::CommandIo {
         program: label.into(),

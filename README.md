@@ -6,13 +6,25 @@ The host orchestrator, container init, egress proxy, and transport relays are Ru
 
 ## Install
 
-Download the signed archive for macOS or Linux (amd64 or arm64) from GitHub Releases, verify it against `SHA256SUMS` and the adjacent Sigstore bundle, then place `codex-start` on `PATH`. Building from source requires Rust 1.88 or newer:
+Install the latest stable release on Linux or macOS:
+
+```console
+curl --proto '=https' --tlsv1.2 -fsSLo install.sh \
+  https://github.com/cofob/codex-start/releases/latest/download/install.sh
+sh install.sh
+```
+
+On Windows, download and run `install.ps1` from PowerShell. Both installers support x86-64 and ARM64, mandatory SHA-256 verification, optional or required keyless Sigstore verification, user-local atomic installation, and an explicit system mode. Linux system mode selects the matching DEB, RPM, or APK package.
+
+A fresh interactive install asks whether to enable automatic update checks. Use `--no-auto-updates` or `-NoAutoUpdates` to disable them at installation time; upgrades preserve the existing choice. Afterwards, `codex-start update --check` checks without changing anything, `codex-start update` prompts before installing, and `codex-start config set --global updates.enabled false` disables automatic checks without disabling manual updates. See [installation and update documentation](docs/installation.md) for all installer options, verification commands, supported targets, and update behavior.
+
+Building from source requires Rust 1.88 or newer:
 
 ```console
 cargo install --locked --path crates/codex-start-host
 ```
 
-You also need Docker 27+ or Podman 5.4+, Git, and the usual engine VM on macOS. `codex-start doctor` validates configuration, environments, the selected home, Git discovery, and the selected runtime. `doctor --deep` also runs `codex --version` and an offline `codex sandbox -- /bin/true` probe in the selected image; a failed nested-sandbox probe is a warning because the container remains the default security boundary.
+You also need Docker 27+ or Podman 5.4+, Git, and the usual engine VM on macOS. Windows uses Docker Desktop with Linux containers; Podman is not supported there. `codex-start doctor` validates configuration, environments, the selected home, Git discovery, and the selected runtime. `doctor --deep` also runs `codex --version` and an offline `codex sandbox -- /bin/true` probe in the selected image; a failed nested-sandbox probe is a warning because the container remains the default security boundary.
 
 On rootless Podman, codex-start automatically maps the Podman service user to the workload UID/GID with a `keep-id` user namespace so the final non-root workload can write the bind-mounted checkout. The Rust init helper still starts as container root, remaps the `codex` account, prepares container-owned volumes, and drops privileges before running Codex. Docker and rootful Podman retain their normal identity mapping; remote rootless Podman receives the explicit workload mapping rather than assuming the client and service use the same numeric IDs.
 
@@ -149,7 +161,7 @@ The default `allowlist` mode gives the workload only an internal network. A non-
 
 Browser opening, native MCP OAuth callbacks, SSH/GPG-agent fallbacks, declared loopback services, and automatically detected Ollama/LM Studio endpoints use Rust bridges. OAuth callback port/URL settings and final Codex `-c` overrides are coordinated with the host listener. In `allowlist` mode, Git SSH also uses an authenticated, destination-restricted host SSH bridge; `bridge` and `host` mode use the container's OpenSSH client directly. Every engine-reachable bridge endpoint authenticates with a per-run token mounted at `/run/codex-start/secrets/host-services`. `offline` disables host bridges and SSH/GPG-agent forwarding.
 
-Secrets can be read from a host environment variable, permission-checked file, argv-based command, or native keychain. Projects and environments reference trusted global provider names. Values are materialized as private files below `/run/secrets` and loaded into the child environment by the init helper, so they do not appear in TOML, engine inspection, dry-run plans, logs, or errors. See the [security model](docs/security.md).
+Secrets can be read from a host environment variable, permission-checked file, argv-based command, or native keychain. Windows supports environment and argv-only command providers; file and keychain providers fail closed until an ACL-backed file reader is available. Projects and environments reference trusted global provider names. Values are materialized as private files below `/run/secrets` and loaded into the child environment by the init helper, so they do not appear in TOML, engine inspection, dry-run plans, logs, or errors. See the [security model](docs/security.md).
 
 Static native Codex HTTP-header tables are intentionally rejected; configure `env_http_headers` with environment-variable names backed by global providers. Literal launcher/environment fields are for non-secret configuration only.
 

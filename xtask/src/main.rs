@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use flate2::{Compression, GzBuilder};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tar::{Builder as TarBuilder, EntryType as TarEntryType, Header as TarHeader, HeaderMode};
 use thiserror::Error;
@@ -66,7 +66,7 @@ enum Command {
         #[arg(long)]
         expected: Option<String>,
     },
-    /// Create a deterministic gzip-compressed release archive.
+    /// Create a deterministic tar.gz or ZIP release archive.
     ReleaseArchive {
         /// Directory whose contents will be archived.
         directory: PathBuf,
@@ -90,6 +90,20 @@ enum Command {
     },
     /// Verify every entry in a SHA256SUMS file.
     VerifyChecksums {
+        manifest: PathBuf,
+        #[arg(long)]
+        base: Option<PathBuf>,
+    },
+    /// Generate the schema-versioned release artifact manifest.
+    ReleaseManifest {
+        directory: PathBuf,
+        #[arg(long)]
+        version: String,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Validate a release artifact manifest and all referenced files.
+    ValidateReleaseManifest {
         manifest: PathBuf,
         #[arg(long)]
         base: Option<PathBuf>,
@@ -141,6 +155,8 @@ enum Error {
     },
     #[error("failed to serialize JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("failed to process ZIP archive: {0}")]
+    Zip(#[from] zip::result::ZipError),
     #[error("validation failed: {0}")]
     Validation(String),
     #[error("checksum mismatch for {path}: expected {expected}, calculated {actual}")]
@@ -236,6 +252,26 @@ fn run(cli: Cli) -> Result<()> {
             });
             verify_checksums(&manifest, &base)?;
             println!("verified {}", manifest.display());
+        }
+        Command::ReleaseManifest {
+            directory,
+            version,
+            output,
+        } => {
+            let output = output.unwrap_or_else(|| directory.join("release-manifest.json"));
+            write_release_manifest(&directory, &output, &version)?;
+            println!("wrote {}", output.display());
+        }
+        Command::ValidateReleaseManifest { manifest, base } => {
+            let base = base.unwrap_or_else(|| {
+                manifest
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf()
+            });
+            let release = load_release_manifest(&manifest)?;
+            validate_release_manifest(&release, &base)?;
+            println!("validated {}", manifest.display());
         }
     }
     Ok(())
@@ -1075,13 +1111,7 @@ fn write_release_archive(
             directory.display()
         ),
     )?;
-    ensure(
-        output
-            .file_name()
-            .and_then(OsStr::to_str)
-            .is_some_and(|name| name.len() > ".tar.gz".len() && name.ends_with(".tar.gz")),
-        "release archive output must end in .tar.gz",
-    )?;
+    let format = release_archive_format(output)?;
     ensure(
         !output.try_exists().map_err(|source| Error::Read {
             path: output.to_path_buf(),
@@ -1109,14 +1139,24 @@ fn write_release_archive(
         path: output.to_path_buf(),
         source,
     })?;
-    write_release_tar_gzip(
-        temporary.as_file_mut(),
-        output,
-        &prefix_name,
-        source_date_epoch,
-        &entries,
-        &executables,
-    )?;
+    match format {
+        ReleaseArchiveFormat::TarGzip => write_release_tar_gzip(
+            temporary.as_file_mut(),
+            output,
+            &prefix_name,
+            source_date_epoch,
+            &entries,
+            &executables,
+        )?,
+        ReleaseArchiveFormat::Zip => write_release_zip(
+            temporary.as_file_mut(),
+            output,
+            &prefix_name,
+            source_date_epoch,
+            &entries,
+            &executables,
+        )?,
+    }
     temporary
         .as_file_mut()
         .sync_all()
@@ -1131,6 +1171,132 @@ fn write_release_archive(
             source,
         })?;
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReleaseArchiveFormat {
+    TarGzip,
+    Zip,
+}
+
+fn release_archive_format(output: &Path) -> Result<ReleaseArchiveFormat> {
+    let name = output.file_name().and_then(OsStr::to_str).ok_or_else(|| {
+        Error::Validation("release archive output must have a UTF-8 filename".to_owned())
+    })?;
+    if name.len() > ".tar.gz".len() && name.ends_with(".tar.gz") {
+        Ok(ReleaseArchiveFormat::TarGzip)
+    } else if name.len() > ".zip".len()
+        && Path::new(name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+    {
+        Ok(ReleaseArchiveFormat::Zip)
+    } else {
+        Err(Error::Validation(
+            "release archive output must end in .tar.gz or .zip".to_owned(),
+        ))
+    }
+}
+
+fn write_release_zip(
+    destination: &mut fs::File,
+    output: &Path,
+    prefix: &str,
+    source_date_epoch: u32,
+    entries: &[ReleaseArchiveEntry],
+    executables: &BTreeSet<String>,
+) -> Result<()> {
+    let modified = zip_datetime(source_date_epoch)?;
+    let directory_options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .last_modified_time(modified)
+        .unix_permissions(0o755)
+        .system(zip::System::Unix);
+    let mut archive = zip::ZipWriter::new(destination);
+    archive.add_directory(format!("{prefix}/"), directory_options)?;
+    for entry in entries {
+        let archive_name = format!("{prefix}/{}", entry.relative_name);
+        match &entry.kind {
+            ReleaseArchiveEntryKind::Directory => {
+                archive.add_directory(format!("{archive_name}/"), directory_options)?;
+            }
+            ReleaseArchiveEntryKind::File => {
+                let options = zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated)
+                    .compression_level(Some(9))
+                    .last_modified_time(modified)
+                    .unix_permissions(if executables.contains(&entry.relative_name) {
+                        0o755
+                    } else {
+                        0o644
+                    })
+                    .system(zip::System::Unix);
+                archive.start_file(&archive_name, options)?;
+                let mut file = fs::File::open(&entry.source).map_err(|source| Error::Read {
+                    path: entry.source.clone(),
+                    source,
+                })?;
+                io::copy(&mut file, &mut archive).map_err(|source| Error::Write {
+                    path: output.to_path_buf(),
+                    source,
+                })?;
+            }
+            ReleaseArchiveEntryKind::Symlink(_) => {
+                return Err(Error::Validation(format!(
+                    "ZIP release archives cannot contain symlinks: {}",
+                    entry.source.display()
+                )));
+            }
+        }
+    }
+    archive.finish()?;
+    Ok(())
+}
+
+fn zip_datetime(source_date_epoch: u32) -> Result<zip::DateTime> {
+    let seconds = i64::from(source_date_epoch);
+    let days = seconds / 86_400;
+    let seconds_in_day = seconds % 86_400;
+    let (year, month, day) = civil_date_from_unix_days(days);
+    let hour = u8::try_from(seconds_in_day / 3_600)
+        .expect("seconds in a UTC day always produce a valid hour");
+    let minute = u8::try_from((seconds_in_day % 3_600) / 60)
+        .expect("seconds in a UTC hour always produce a valid minute");
+    let second = u8::try_from(seconds_in_day % 60)
+        .expect("seconds in a UTC minute always produce a valid second");
+    let year = u16::try_from(year).map_err(|_| {
+        Error::Validation(format!(
+            "SOURCE_DATE_EPOCH {source_date_epoch} is outside the ZIP timestamp range"
+        ))
+    })?;
+    zip::DateTime::from_date_and_time(year, month, day, hour, minute, second).map_err(|_| {
+        Error::Validation(format!(
+            "SOURCE_DATE_EPOCH {source_date_epoch} is outside the ZIP timestamp range"
+        ))
+    })
+}
+
+fn civil_date_from_unix_days(days: i64) -> (i64, u8, u8) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    (
+        year,
+        u8::try_from(month).expect("civil-date month is within 1..=12"),
+        u8::try_from(day).expect("civil-date day is within 1..=31"),
+    )
 }
 
 fn write_release_tar_gzip(
@@ -1484,6 +1650,422 @@ fn verify_checksums(manifest: &Path, base: &Path) -> Result<()> {
     ensure(count > 0, "checksum manifest contains no entries")
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseManifest {
+    schema_version: u32,
+    version: String,
+    tag: String,
+    artifacts: Vec<ReleaseArtifact>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ReleaseArtifactKind {
+    Archive,
+    Deb,
+    Rpm,
+    Apk,
+    Installer,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ReleaseOperatingSystem {
+    Linux,
+    Macos,
+    Posix,
+    Windows,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ReleaseArchitecture {
+    X86_64,
+    Aarch64,
+    Any,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseArtifact {
+    kind: ReleaseArtifactKind,
+    os: ReleaseOperatingSystem,
+    arch: ReleaseArchitecture,
+    libc: Option<String>,
+    filename: String,
+    size: u64,
+    sha256: String,
+    bundle: String,
+    sbom: String,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ReleaseArtifactIdentity {
+    kind: ReleaseArtifactKind,
+    os: ReleaseOperatingSystem,
+    arch: ReleaseArchitecture,
+    libc: Option<&'static str>,
+    filename: String,
+}
+
+impl ReleaseArtifactIdentity {
+    fn archive(
+        version: &str,
+        target: &str,
+        os: ReleaseOperatingSystem,
+        arch: ReleaseArchitecture,
+        libc: Option<&'static str>,
+        extension: &str,
+    ) -> Self {
+        Self {
+            kind: ReleaseArtifactKind::Archive,
+            os,
+            arch,
+            libc,
+            filename: format!("codex-start-{version}-{target}.{extension}"),
+        }
+    }
+
+    fn package(
+        version: &str,
+        target: &str,
+        kind: ReleaseArtifactKind,
+        arch: ReleaseArchitecture,
+        libc: &'static str,
+        extension: &str,
+    ) -> Self {
+        Self {
+            kind,
+            os: ReleaseOperatingSystem::Linux,
+            arch,
+            libc: Some(libc),
+            filename: format!("codex-start-{version}-{target}.{extension}"),
+        }
+    }
+
+    fn installer(filename: &str, os: ReleaseOperatingSystem, arch: ReleaseArchitecture) -> Self {
+        Self {
+            kind: ReleaseArtifactKind::Installer,
+            os,
+            arch,
+            libc: None,
+            filename: filename.to_owned(),
+        }
+    }
+}
+
+fn expected_release_artifacts(version: &str) -> Vec<ReleaseArtifactIdentity> {
+    let mut artifacts = expected_release_archives(version);
+    artifacts.extend(expected_release_packages(version));
+    artifacts.extend([
+        ReleaseArtifactIdentity::installer(
+            "install.sh",
+            ReleaseOperatingSystem::Posix,
+            ReleaseArchitecture::Any,
+        ),
+        ReleaseArtifactIdentity::installer(
+            "install.ps1",
+            ReleaseOperatingSystem::Windows,
+            ReleaseArchitecture::Any,
+        ),
+    ]);
+    artifacts.sort_by(|left, right| left.filename.cmp(&right.filename));
+    artifacts
+}
+
+fn expected_release_archives(version: &str) -> Vec<ReleaseArtifactIdentity> {
+    use ReleaseArchitecture::{Aarch64, X86_64};
+    use ReleaseOperatingSystem::{Linux, Macos, Windows};
+
+    vec![
+        ReleaseArtifactIdentity::archive(
+            version,
+            "x86_64-unknown-linux-gnu",
+            Linux,
+            X86_64,
+            Some("gnu"),
+            "tar.gz",
+        ),
+        ReleaseArtifactIdentity::archive(
+            version,
+            "aarch64-unknown-linux-gnu",
+            Linux,
+            Aarch64,
+            Some("gnu"),
+            "tar.gz",
+        ),
+        ReleaseArtifactIdentity::archive(
+            version,
+            "x86_64-unknown-linux-musl",
+            Linux,
+            X86_64,
+            Some("musl"),
+            "tar.gz",
+        ),
+        ReleaseArtifactIdentity::archive(
+            version,
+            "aarch64-unknown-linux-musl",
+            Linux,
+            Aarch64,
+            Some("musl"),
+            "tar.gz",
+        ),
+        ReleaseArtifactIdentity::archive(
+            version,
+            "x86_64-apple-darwin",
+            Macos,
+            X86_64,
+            None,
+            "tar.gz",
+        ),
+        ReleaseArtifactIdentity::archive(
+            version,
+            "aarch64-apple-darwin",
+            Macos,
+            Aarch64,
+            None,
+            "tar.gz",
+        ),
+        ReleaseArtifactIdentity::archive(
+            version,
+            "x86_64-pc-windows-msvc",
+            Windows,
+            X86_64,
+            None,
+            "zip",
+        ),
+        ReleaseArtifactIdentity::archive(
+            version,
+            "aarch64-pc-windows-msvc",
+            Windows,
+            Aarch64,
+            None,
+            "zip",
+        ),
+    ]
+}
+
+fn expected_release_packages(version: &str) -> Vec<ReleaseArtifactIdentity> {
+    use ReleaseArchitecture::{Aarch64, X86_64};
+    use ReleaseArtifactKind::{Apk, Deb, Rpm};
+
+    vec![
+        ReleaseArtifactIdentity::package(
+            version,
+            "x86_64-unknown-linux-gnu",
+            Deb,
+            X86_64,
+            "gnu",
+            "deb",
+        ),
+        ReleaseArtifactIdentity::package(
+            version,
+            "aarch64-unknown-linux-gnu",
+            Deb,
+            Aarch64,
+            "gnu",
+            "deb",
+        ),
+        ReleaseArtifactIdentity::package(
+            version,
+            "x86_64-unknown-linux-gnu",
+            Rpm,
+            X86_64,
+            "gnu",
+            "rpm",
+        ),
+        ReleaseArtifactIdentity::package(
+            version,
+            "aarch64-unknown-linux-gnu",
+            Rpm,
+            Aarch64,
+            "gnu",
+            "rpm",
+        ),
+        ReleaseArtifactIdentity::package(
+            version,
+            "x86_64-unknown-linux-musl",
+            Apk,
+            X86_64,
+            "musl",
+            "apk",
+        ),
+        ReleaseArtifactIdentity::package(
+            version,
+            "aarch64-unknown-linux-musl",
+            Apk,
+            Aarch64,
+            "musl",
+            "apk",
+        ),
+    ]
+}
+
+fn write_release_manifest(directory: &Path, output: &Path, version: &str) -> Result<()> {
+    ensure(
+        directory.is_dir(),
+        format!("release directory does not exist: {}", directory.display()),
+    )?;
+    validate_semantic_version(version)?;
+    ensure(
+        !output.try_exists().map_err(|source| Error::Read {
+            path: output.to_path_buf(),
+            source,
+        })?,
+        format!("release manifest already exists: {}", output.display()),
+    )?;
+
+    let mut artifacts = Vec::new();
+    for expected in expected_release_artifacts(version) {
+        let path = directory.join(&expected.filename);
+        let metadata = fs::metadata(&path).map_err(|source| Error::Read {
+            path: path.clone(),
+            source,
+        })?;
+        ensure(
+            metadata.is_file(),
+            format!("release artifact is not a file: {}", path.display()),
+        )?;
+        artifacts.push(ReleaseArtifact {
+            kind: expected.kind,
+            os: expected.os,
+            arch: expected.arch,
+            libc: expected.libc.map(str::to_owned),
+            filename: expected.filename.clone(),
+            size: metadata.len(),
+            sha256: sha256_file(&path)?,
+            bundle: format!("{}.bundle", expected.filename),
+            sbom: format!("{}.spdx.json", expected.filename),
+        });
+    }
+    let manifest = ReleaseManifest {
+        schema_version: 1,
+        version: version.to_owned(),
+        tag: format!("v{version}"),
+        artifacts,
+    };
+    validate_release_manifest(&manifest, directory)?;
+    let mut encoded = serde_json::to_vec_pretty(&manifest)?;
+    encoded.push(b'\n');
+    fs::write(output, encoded).map_err(|source| Error::Write {
+        path: output.to_path_buf(),
+        source,
+    })
+}
+
+fn load_release_manifest(path: &Path) -> Result<ReleaseManifest> {
+    let contents = read_to_string(path)?;
+    serde_json::from_str(&contents).map_err(Error::Json)
+}
+
+fn validate_release_manifest(manifest: &ReleaseManifest, base: &Path) -> Result<()> {
+    ensure(
+        manifest.schema_version == 1,
+        "release manifest schema_version must be 1",
+    )?;
+    validate_semantic_version(&manifest.version)?;
+    ensure(
+        manifest.tag == format!("v{}", manifest.version),
+        "release manifest tag must be v followed by version",
+    )?;
+    let expected = expected_release_artifacts(&manifest.version);
+    ensure(
+        manifest.artifacts.len() == expected.len(),
+        format!(
+            "release manifest must contain exactly {} artifacts",
+            expected.len()
+        ),
+    )?;
+
+    let mut filenames = BTreeSet::new();
+    for (artifact, expected) in manifest.artifacts.iter().zip(&expected) {
+        ensure(
+            artifact.kind == expected.kind
+                && artifact.os == expected.os
+                && artifact.arch == expected.arch
+                && artifact.libc.as_deref() == expected.libc
+                && artifact.filename == expected.filename,
+            format!(
+                "release artifact order or metadata differs from the required matrix at {}",
+                artifact.filename
+            ),
+        )?;
+        ensure(
+            filenames.insert(&artifact.filename),
+            format!("release manifest repeats {}", artifact.filename),
+        )?;
+        ensure(
+            safe_release_filename(&artifact.filename),
+            format!("unsafe release artifact filename {}", artifact.filename),
+        )?;
+        validate_sha256("release artifact", &artifact.sha256, false)?;
+        ensure(
+            artifact.bundle == format!("{}.bundle", artifact.filename),
+            format!("invalid bundle name for {}", artifact.filename),
+        )?;
+        ensure(
+            artifact.sbom == format!("{}.spdx.json", artifact.filename),
+            format!("invalid SBOM name for {}", artifact.filename),
+        )?;
+
+        let path = base.join(&artifact.filename);
+        let metadata = fs::metadata(&path).map_err(|source| Error::Read {
+            path: path.clone(),
+            source,
+        })?;
+        ensure(
+            metadata.is_file() && metadata.len() == artifact.size,
+            format!("release artifact size differs for {}", artifact.filename),
+        )?;
+        let actual = sha256_file(&path)?;
+        if !actual.eq_ignore_ascii_case(&artifact.sha256) {
+            return Err(Error::ChecksumMismatch {
+                path,
+                expected: artifact.sha256.clone(),
+                actual,
+            });
+        }
+        for related in [&artifact.bundle, &artifact.sbom] {
+            ensure(
+                safe_release_filename(related),
+                format!("unsafe related release filename {related}"),
+            )?;
+            let related_path = base.join(related);
+            let related_metadata = fs::metadata(&related_path).map_err(|source| Error::Read {
+                path: related_path.clone(),
+                source,
+            })?;
+            ensure(
+                related_metadata.is_file() && related_metadata.len() > 0,
+                format!("release metadata file is empty: {}", related_path.display()),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_semantic_version(version: &str) -> Result<()> {
+    let parsed = semver::Version::parse(version).map_err(|error| {
+        Error::Validation(format!(
+            "release version is not valid SemVer: {version}: {error}"
+        ))
+    })?;
+    ensure(
+        parsed.to_string() == version,
+        format!("release version must use canonical SemVer: {version}"),
+    )
+}
+
+fn safe_release_filename(filename: &str) -> bool {
+    !filename.is_empty()
+        && filename.len() <= 255
+        && !filename.starts_with('.')
+        && filename
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+'))
+}
+
 fn read_to_string(path: &Path) -> Result<String> {
     fs::read_to_string(path).map_err(|source| Error::Read {
         path: path.to_path_buf(),
@@ -1757,6 +2339,124 @@ mod tests {
         assert_eq!(records[2].2, 0o755);
         assert_eq!(records[3].2, 0o755);
         assert_eq!(records[4].2, 0o644);
+    }
+
+    #[test]
+    fn release_zip_archives_are_byte_for_byte_deterministic() {
+        const EPOCH: u32 = 1_700_000_123;
+
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let first_source = temp.path().join("first-zip-source");
+        let second_source = temp.path().join("second-zip-source");
+        create_release_fixture(&first_source, false);
+        create_release_fixture(&second_source, true);
+        let first_archive = temp.path().join("first.zip");
+        let second_archive = temp.path().join("second.zip");
+        let executables = [PathBuf::from("bin/codex-start")];
+
+        write_release_archive(
+            &first_source,
+            &first_archive,
+            Path::new("codex-start-1.0.0"),
+            EPOCH,
+            &executables,
+        )
+        .expect("write first ZIP archive");
+        write_release_archive(
+            &second_source,
+            &second_archive,
+            Path::new("codex-start-1.0.0"),
+            EPOCH,
+            &executables,
+        )
+        .expect("write second ZIP archive");
+
+        assert_eq!(
+            fs::read(&first_archive).expect("read first ZIP"),
+            fs::read(&second_archive).expect("read second ZIP")
+        );
+        let mut archive = zip::ZipArchive::new(
+            fs::File::open(&first_archive).expect("open deterministic ZIP archive"),
+        )
+        .expect("read deterministic ZIP archive");
+        let names: Vec<_> = archive.file_names().map(str::to_owned).collect();
+        assert_eq!(
+            names,
+            [
+                "codex-start-1.0.0/",
+                "codex-start-1.0.0/README.md",
+                "codex-start-1.0.0/bin/",
+                "codex-start-1.0.0/bin/codex-start",
+                "codex-start-1.0.0/z.txt",
+            ]
+        );
+        let executable = archive
+            .by_name("codex-start-1.0.0/bin/codex-start")
+            .expect("find executable");
+        assert_eq!(executable.unix_mode(), Some(0o100_755));
+        assert_eq!(
+            executable
+                .last_modified()
+                .expect("ZIP entry has a timestamp")
+                .year(),
+            2023
+        );
+    }
+
+    #[test]
+    fn release_manifest_round_trip_and_tamper_detection() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let version = "1.2.3";
+        for expected in expected_release_artifacts(version) {
+            fs::write(
+                temp.path().join(&expected.filename),
+                format!("artifact:{}", expected.filename),
+            )
+            .expect("write release artifact");
+            fs::write(
+                temp.path().join(format!("{}.bundle", expected.filename)),
+                b"signed bundle",
+            )
+            .expect("write signature bundle");
+            fs::write(
+                temp.path().join(format!("{}.spdx.json", expected.filename)),
+                b"{}",
+            )
+            .expect("write SBOM");
+        }
+        let manifest_path = temp.path().join("release-manifest.json");
+        write_release_manifest(temp.path(), &manifest_path, version)
+            .expect("write release manifest");
+        let manifest = load_release_manifest(&manifest_path).expect("load release manifest");
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(manifest.version, version);
+        assert_eq!(manifest.tag, "v1.2.3");
+        assert_eq!(manifest.artifacts.len(), 16);
+        validate_release_manifest(&manifest, temp.path()).expect("validate release manifest");
+
+        let json = fs::read_to_string(&manifest_path).expect("read release manifest JSON");
+        assert!(json.contains("\"libc\": null"));
+        let tampered = temp.path().join(&manifest.artifacts[0].filename);
+        fs::write(tampered, b"tampered").expect("tamper release artifact");
+        assert!(matches!(
+            validate_release_manifest(&manifest, temp.path()),
+            Err(Error::Validation(_) | Error::ChecksumMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn release_manifest_rejects_unknown_fields_and_noncanonical_versions() {
+        assert!(validate_semantic_version("1.2.3").is_ok());
+        assert!(validate_semantic_version("01.2.3").is_err());
+        assert!(validate_semantic_version("v1.2.3").is_err());
+        let json = r#"{
+          "schema_version": 1,
+          "version": "1.2.3",
+          "tag": "v1.2.3",
+          "artifacts": [],
+          "unexpected": true
+        }"#;
+        assert!(serde_json::from_str::<ReleaseManifest>(json).is_err());
     }
 
     #[test]

@@ -1,21 +1,22 @@
 //! Authenticated TCP and Unix-socket relays with bounded resource use.
 
-use std::{
-    ffi::OsString,
-    future::Future,
-    io,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{future::Future, io, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
+#[cfg(unix)]
+use std::ffi::OsString;
+#[cfg(unix)]
+use std::path::Path;
+
+#[cfg(unix)]
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+#[cfg(unix)]
 use serde::Deserialize;
 use thiserror::Error;
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{TcpListener, TcpStream, UnixListener, UnixStream},
+    net::{TcpListener, TcpStream},
     sync::{Semaphore, watch},
     task::JoinSet,
     time::{sleep, timeout},
@@ -85,12 +86,14 @@ pub enum RelayTarget {
     UnixTargetFile(PathBuf),
 }
 
+#[cfg(unix)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EncodedTarget {
     unix_base64: String,
 }
 
+#[cfg(unix)]
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum TargetRepresentation {
@@ -182,29 +185,46 @@ async fn handle_authenticated_server(
             relay_bidirectional(&mut inbound, &mut outbound, config.idle_timeout).await
         }
         RelayTarget::Unix(path) => {
-            let mut outbound = timeout(config.connect_timeout, UnixStream::connect(path))
-                .await
-                .map_err(|_| RelayError::ConnectTimeout(path.display().to_string()))?
-                .map_err(|source| RelayError::Connect {
-                    target: path.display().to_string(),
-                    source,
-                })?;
-            relay_bidirectional(&mut inbound, &mut outbound, config.idle_timeout).await
+            #[cfg(unix)]
+            {
+                let mut outbound = timeout(config.connect_timeout, UnixStream::connect(path))
+                    .await
+                    .map_err(|_| RelayError::ConnectTimeout(path.display().to_string()))?
+                    .map_err(|source| RelayError::Connect {
+                        target: path.display().to_string(),
+                        source,
+                    })?;
+                relay_bidirectional(&mut inbound, &mut outbound, config.idle_timeout).await
+            }
+            #[cfg(windows)]
+            {
+                Err(RelayError::UnsupportedTarget(path.display().to_string()))
+            }
         }
         RelayTarget::UnixTargetFile(target_file) => {
-            let path = load_unix_target_file(target_file)?;
-            let mut outbound = timeout(config.connect_timeout, UnixStream::connect(&path))
-                .await
-                .map_err(|_| RelayError::ConnectTimeout(path.display().to_string()))?
-                .map_err(|source| RelayError::Connect {
-                    target: path.display().to_string(),
-                    source,
-                })?;
-            relay_bidirectional(&mut inbound, &mut outbound, config.idle_timeout).await
+            #[cfg(unix)]
+            {
+                let path = load_unix_target_file(target_file)?;
+                let mut outbound = timeout(config.connect_timeout, UnixStream::connect(&path))
+                    .await
+                    .map_err(|_| RelayError::ConnectTimeout(path.display().to_string()))?
+                    .map_err(|source| RelayError::Connect {
+                        target: path.display().to_string(),
+                        source,
+                    })?;
+                relay_bidirectional(&mut inbound, &mut outbound, config.idle_timeout).await
+            }
+            #[cfg(windows)]
+            {
+                Err(RelayError::UnsupportedTarget(
+                    target_file.display().to_string(),
+                ))
+            }
         }
     }
 }
 
+#[cfg(unix)]
 fn load_unix_target_file(path: &Path) -> Result<PathBuf, RelayError> {
     const MAX_TARGET_BYTES: u64 = 16 * 1_024;
     let metadata = std::fs::symlink_metadata(path).map_err(|source| RelayError::TargetFile {
@@ -289,6 +309,7 @@ where
 /// # Errors
 ///
 /// Returns an error for invalid limits or a listener-level accept failure.
+#[cfg(unix)]
 pub async fn serve_unix_bridge<F>(
     listener: UnixListener,
     remote: String,
@@ -311,11 +332,13 @@ where
 
 enum LocalListener {
     Tcp(TcpListener),
+    #[cfg(unix)]
     Unix(UnixListener),
 }
 
 enum LocalStream {
     Tcp(TcpStream),
+    #[cfg(unix)]
     Unix(UnixStream),
 }
 
@@ -376,6 +399,7 @@ async fn accept_local(listener: &LocalListener) -> Result<LocalStream, RelayErro
             .await
             .map(|(stream, _)| LocalStream::Tcp(stream))
             .map_err(RelayError::Accept),
+        #[cfg(unix)]
         LocalListener::Unix(listener) => listener
             .accept()
             .await
@@ -402,6 +426,7 @@ async fn handle_client_bridge(
         LocalStream::Tcp(local) => {
             relay_bidirectional(local, &mut outbound, config.idle_timeout).await
         }
+        #[cfg(unix)]
         LocalStream::Unix(local) => {
             relay_bidirectional(local, &mut outbound, config.idle_timeout).await
         }
@@ -683,6 +708,7 @@ async fn wait_until_idle(mut activity: watch::Receiver<()>, idle_timeout: Durati
 ///
 /// Returns an error when the path is occupied by a non-socket or socket setup
 /// and permission changes fail.
+#[cfg(unix)]
 pub fn bind_unix_listener(path: &Path) -> Result<UnixListener, RelayError> {
     use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
@@ -730,6 +756,8 @@ pub enum RelayError {
         #[source]
         source: io::Error,
     },
+    #[error("Unix relay target `{0}` is unsupported on Windows")]
+    UnsupportedTarget(String),
     #[error("relay authentication timed out")]
     HandshakeTimeout,
     #[error("invalid relay handshake")]
@@ -865,6 +893,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn unix_bind_refuses_regular_file() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("relay.sock");

@@ -10,6 +10,7 @@
 #![allow(clippy::missing_errors_doc, clippy::struct_excessive_bools)]
 
 pub mod config;
+pub mod container_path;
 pub mod environment;
 pub mod plan;
 pub mod project;
@@ -21,8 +22,10 @@ pub use config::{
     MemorySwapLimit, MergeConfig, MergePatch, NetworkMode, ProfileConfig, Provenance, ProxyConfig,
     ProxyPatch, ResolvedConfig, ResourceLimits, ResourcePatch, ResourceValues, RuntimeKind,
     SecretProvider, SecretProviderKind, SessionConfig, SessionExitBehavior, SessionPatch,
-    SshAgentBridge, TtyMode, Ulimit, ValueSource, WorktreeMode, environment_patch,
+    SshAgentBridge, TtyMode, Ulimit, UpdateConfig, UpdatePatch, ValueSource, WorktreeMode,
+    environment_patch,
 };
+pub use container_path::{ContainerPath, ContainerPathError};
 pub use environment::{
     BuildSpec, CacheScope, CacheSpec, CommandSpec, EnvironmentError, EnvironmentManifest,
     EnvironmentRegistry, HostServiceSpec, ManifestSource, MountKind, MountSpec, PortProtocol,

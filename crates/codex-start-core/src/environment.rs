@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::{ConfigPatch, valid_dns_or_ip, valid_host_rule_syntax};
+use crate::{
+    config::{ConfigPatch, valid_dns_or_ip, valid_host_rule_syntax},
+    container_path::ContainerPath,
+};
 
 /// Current on-disk environment manifest schema.
 pub const ENVIRONMENT_SCHEMA_VERSION: u32 = 1;
@@ -284,9 +287,13 @@ fn validate_manifest_header(manifest: &EnvironmentManifest) -> Result<(), Enviro
         .settings
         .validate()
         .map_err(|error| EnvironmentError::Invalid(error.to_string()))?;
-    if manifest.settings.profile.is_some() || manifest.settings.environment.is_some() {
+    if manifest.settings.profile.is_some()
+        || manifest.settings.environment.is_some()
+        || manifest.settings.updates.is_some()
+    {
         return Err(EnvironmentError::Invalid(
-            "environment defaults cannot select a profile or another environment".into(),
+            "environment defaults cannot select a profile, another environment, or host update policy"
+                .into(),
         ));
     }
     if manifest.image.is_some() && manifest.build.is_some() {
@@ -300,7 +307,7 @@ fn validate_manifest_header(manifest: &EnvironmentManifest) -> Result<(), Enviro
     if manifest
         .workdir
         .as_ref()
-        .is_some_and(|path| !path.is_absolute())
+        .is_some_and(|path| ContainerPath::new(path).is_err())
     {
         return Err(EnvironmentError::Invalid(
             "container workdir must be absolute".into(),
@@ -810,7 +817,7 @@ fn validate_resource_ids<T>(
 }
 
 fn validate_absolute_target(kind: &str, path: &Path) -> Result<(), EnvironmentError> {
-    if !path.is_absolute() || path == Path::new("/") {
+    if ContainerPath::new(path).is_err() || path.as_os_str() == "/" {
         return Err(EnvironmentError::Invalid(format!(
             "{kind} target `{}` must be an absolute non-root path",
             path.display()

@@ -3,7 +3,6 @@
 use std::{
     fs,
     io::ErrorKind,
-    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     path::{Component, Path},
 };
 
@@ -43,12 +42,8 @@ pub(crate) fn hash_entry(
         .strip_prefix(content_root)
         .map_err(|_| unsafe_path(path, "entry is outside the content root"))?;
     let metadata = fs::symlink_metadata(path).map_err(|source| HostError::io(path, source))?;
-    hash_field(hasher, b"path", relative.as_os_str().as_bytes());
-    hash_field(
-        hasher,
-        b"mode",
-        &(metadata.permissions().mode() & 0o7777).to_le_bytes(),
-    );
+    hash_field(hasher, b"path", relative.as_os_str().as_encoded_bytes());
+    hash_field(hasher, b"mode", &platform_mode(&metadata).to_le_bytes());
     let file_type = metadata.file_type();
     if file_type.is_file() {
         hash_field(hasher, b"type", b"file");
@@ -60,7 +55,7 @@ pub(crate) fn hash_entry(
         hash_field(hasher, b"type", b"symlink");
         let target = fs::read_link(path).map_err(|source| HostError::io(path, source))?;
         validate_symlink(content_root, path, &target)?;
-        hash_field(hasher, b"target", target.as_os_str().as_bytes());
+        hash_field(hasher, b"target", target.as_os_str().as_encoded_bytes());
     } else {
         return Err(unsafe_path(
             path,
@@ -68,6 +63,17 @@ pub(crate) fn hash_entry(
         ));
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn platform_mode(metadata: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o7777
+}
+
+#[cfg(windows)]
+fn platform_mode(metadata: &fs::Metadata) -> u32 {
+    if metadata.is_dir() { 0o755 } else { 0o644 }
 }
 
 fn ensure_within_content_root(content_root: &Path, path: &Path) -> Result<()> {

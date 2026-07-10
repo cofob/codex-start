@@ -74,11 +74,17 @@ impl Default for BrowserOpener {
     fn default() -> Self {
         #[cfg(target_os = "macos")]
         let program = PathBuf::from("/usr/bin/open");
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(not(target_os = "macos"), not(windows)))]
         let program = PathBuf::from("xdg-open");
+        #[cfg(windows)]
+        let program = PathBuf::from("rundll32.exe");
+        #[cfg(windows)]
+        let args = vec![OsString::from("url.dll,FileProtocolHandler")];
+        #[cfg(not(windows))]
+        let args = Vec::new();
         Self {
             program,
-            args: Vec::new(),
+            args,
             timeout_seconds: 10,
         }
     }

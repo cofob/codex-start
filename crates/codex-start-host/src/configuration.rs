@@ -4,14 +4,13 @@ use std::{
     env,
     ffi::OsString,
     fs,
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
 
 use codex_start_core::{
     ConfigDocument, ConfigLayer, ConfigLayerKind, ConfigPatch, ConfigResolver, HomeConfig,
     MergePatch, NetworkMode, ResolvedConfig, RuntimeKind as CoreRuntimeKind, SessionPatch, TtyMode,
-    WorktreeMode as CoreWorktreeMode,
+    UpdateConfig, WorktreeMode as CoreWorktreeMode,
 };
 use toml_edit::{DocumentMut, Item, Table, value};
 
@@ -238,6 +237,27 @@ impl ConfigContext {
             Some((format!("environment:{selected}"), defaults)),
             cli_patch,
         )
+    }
+
+    /// Resolve only the host-global update policy without loading project or
+    /// environment catalogs. This keeps the recovery command usable when an
+    /// unrelated runtime setting is temporarily invalid.
+    pub fn resolve_update_policy(&self) -> Result<UpdateConfig> {
+        let mut resolver = ConfigResolver::new();
+        if ensure_regular_file_or_missing(&self.global_file)? {
+            let document = read_document(&self.global_file, false)?;
+            resolver
+                .add_document(
+                    ConfigLayerKind::Global,
+                    self.global_file.display().to_string(),
+                    update_only_document(document),
+                )
+                .map_err(config_error)?;
+        }
+        resolver
+            .add_environment_overrides(update_environment_overrides(env::vars_os())?)
+            .map_err(config_error)?;
+        Ok(resolver.resolve().map_err(config_error)?.config.updates)
     }
 
     fn resolve_layers(
@@ -530,13 +550,17 @@ fn environment_overrides(
 ) -> Result<Vec<(String, String)>> {
     let mut overrides = Vec::new();
     for (name, value) in values {
-        if !name.as_os_str().as_bytes().starts_with(b"CODEX_START__") {
+        if !name
+            .as_os_str()
+            .as_encoded_bytes()
+            .starts_with(b"CODEX_START__")
+        {
             continue;
         }
         let name = name.into_string().map_err(|name| {
             HostError::Config(format!(
                 "codex-start environment override name is not UTF-8: {:?}",
-                name.as_os_str().as_bytes()
+                name.as_os_str().as_encoded_bytes()
             ))
         })?;
         let value = value.into_string().map_err(|_| {
@@ -545,6 +569,29 @@ fn environment_overrides(
         overrides.push((name, value));
     }
     Ok(overrides)
+}
+
+fn update_environment_overrides(
+    values: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Result<Vec<(String, String)>> {
+    const UPDATES: &[u8] = b"CODEX_START__UPDATES__";
+    let relevant = values.into_iter().filter(|(name, _)| {
+        let bytes = name.as_os_str().as_encoded_bytes();
+        bytes.starts_with(UPDATES)
+    });
+    environment_overrides(relevant)
+}
+
+fn update_only_document(document: ConfigDocument) -> ConfigDocument {
+    let settings = ConfigPatch {
+        updates: document.settings.updates,
+        ..ConfigPatch::default()
+    };
+    ConfigDocument {
+        schema_version: document.schema_version,
+        settings,
+        ..ConfigDocument::default()
+    }
 }
 
 /// Convert CLI options into the highest-precedence typed patch.
@@ -702,7 +749,9 @@ mod tests {
 
     use codex_start_core::{ConfigLayerKind, ConfigPatch, HomeConfig, NetworkMode, RuntimeKind};
 
-    use super::{ConfigContext, ConfigTarget, environment_overrides};
+    #[cfg(unix)]
+    use super::environment_overrides;
+    use super::{ConfigContext, ConfigTarget};
 
     #[test]
     fn set_validates_and_writes_project_document() {
@@ -723,6 +772,71 @@ mod tests {
         context.set(false, "network", "\"offline\"").expect("set");
         let value = fs::read_to_string(&context.project_file).expect("read");
         assert!(value.contains("network = \"offline\""));
+    }
+
+    #[test]
+    fn update_policy_can_only_be_written_to_global_configuration() {
+        let root = tempfile::tempdir().expect("root");
+        let paths = crate::paths::AppPaths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            cache: root.path().join("cache"),
+        };
+        paths.ensure().expect("paths");
+        let context = ConfigContext {
+            global_file: paths.config_file(),
+            project_file: root.path().join("project.toml"),
+            cwd: root.path().to_path_buf(),
+            repo: None,
+            paths,
+        };
+
+        context
+            .set(true, "updates.enabled", "false")
+            .expect("set global update preference");
+        let value = fs::read_to_string(&context.global_file).expect("read global config");
+        assert!(value.contains("[settings.updates]"));
+        assert!(value.contains("enabled = false"));
+
+        assert!(context.set(false, "updates.enabled", "true").is_err());
+        assert!(!context.project_file.exists());
+    }
+
+    #[test]
+    fn update_policy_resolution_ignores_unrelated_broken_runtime_state() {
+        let root = tempfile::tempdir().expect("root");
+        let paths = crate::paths::AppPaths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            cache: root.path().join("cache"),
+        };
+        paths.ensure().expect("paths");
+        let context = ConfigContext {
+            global_file: paths.config_file(),
+            project_file: root.path().join("project.toml"),
+            cwd: root.path().to_path_buf(),
+            repo: None,
+            paths,
+        };
+        fs::write(
+            &context.global_file,
+            "schema_version = 1\n\n[settings]\nhome = 'missing'\n\n[settings.updates]\nenabled = false\nrequire_signature = true\n",
+        )
+        .expect("global config");
+        fs::write(&context.project_file, "this is not valid TOML = [").expect("broken project");
+        fs::write(
+            context.paths.environments_dir().join("broken.toml"),
+            "not an environment",
+        )
+        .expect("broken environment");
+
+        assert!(context.resolve(None).is_err());
+        let policy = context
+            .resolve_update_policy()
+            .expect("isolated update policy");
+        assert!(!policy.enabled);
+        assert!(policy.require_signature);
+        assert_eq!(policy.check_interval_hours, 24);
     }
 
     #[test]

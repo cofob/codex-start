@@ -37,7 +37,7 @@ Offline mode creates none of these listeners or token mounts and disables both d
 
 ## Workload secrets
 
-Global configuration is the only place that can define a secret provider. A project or environment can reference a provider name but cannot define or persist its value. Providers read an exact host environment variable, a permission-checked regular file, the stdout of an argv-only command, or the native macOS/Linux keychain command. Secret commands do not use a shell and suppress stderr from configuration errors.
+Global configuration is the only place that can define a secret provider. A project or environment can reference a provider name but cannot define or persist its value. Providers read an exact host environment variable, a permission-checked regular file, the stdout of an argv-only command, or the native macOS/Linux keychain command. Windows supports the environment and argv-only command providers; it rejects file and keychain providers because their Unix permission/identity guarantees are not available there. Secret commands do not use a shell and suppress stderr from configuration errors.
 
 Schema-defined credential fields accept only provider/environment-variable references. Native Codex static `http_headers`/`headers` tables are rejected for every header name; `env_http_headers` values must be environment-variable names. Literal environment/build/argv settings are non-secret configuration, and credentials must not be disguised under unrelated names because no validator can infer the meaning of arbitrary strings.
 

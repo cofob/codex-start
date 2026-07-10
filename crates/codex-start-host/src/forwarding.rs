@@ -12,7 +12,7 @@ use tempfile::TempDir;
 use crate::{
     command::{CommandSpec, run_capture, run_interactive},
     error::{HostError, Result},
-    paths::{create_private_dir, set_private_file},
+    paths::{create_private_dir, join_container_components, set_private_file},
     runtime::{MountKind, MountRequest, Runtime, RuntimeKind},
 };
 
@@ -75,6 +75,20 @@ impl ForwardingPlan {
         options: &ForwardingOptions,
         runtime_parent: &Path,
     ) -> Result<Self> {
+        #[cfg(windows)]
+        if options.ssh_agent {
+            return Err(HostError::Config(
+                "SSH-agent socket forwarding is unsupported on Windows; set forwarding.ssh_agent = false"
+                    .to_owned(),
+            ));
+        }
+        #[cfg(windows)]
+        if options.gpg_agent {
+            return Err(HostError::Config(
+                "GPG-agent socket forwarding is unsupported on Windows; set forwarding.gpg_agent = false"
+                    .to_owned(),
+            ));
+        }
         create_private_dir(runtime_parent)?;
         let temporary = tempfile::Builder::new()
             .prefix("forwarding-")
@@ -83,7 +97,9 @@ impl ForwardingPlan {
         let mut mounts = Vec::new();
         let mut env_map = BTreeMap::new();
         let mut warnings = Vec::new();
-        let home = env::var_os("HOME").map(PathBuf::from);
+        let home = env::var_os("HOME")
+            .or_else(|| env::var_os("USERPROFILE"))
+            .map(PathBuf::from);
 
         let started_ssh_agent = if options.ssh_agent {
             ensure_host_ssh_agent(&mut warnings)?
@@ -176,7 +192,7 @@ fn prepare_known_hosts(
     let copy = temporary.join("known_hosts");
     fs::copy(&known_hosts, &copy).map_err(|source| HostError::io(&known_hosts, source))?;
     set_private_file(&copy)?;
-    let target = options.container_ssh_dir.join("known_hosts");
+    let target = join_container_components(&options.container_ssh_dir, ["known_hosts"])?;
     mounts.push(bind(&copy, &target, true));
     env_map.insert(
         "CODEX_START_KNOWN_HOSTS".to_owned(),
@@ -200,7 +216,12 @@ fn prepare_ssh_user(
     mounts: &mut Vec<MountRequest>,
     env_map: &mut BTreeMap<String, std::ffi::OsString>,
 ) -> Result<()> {
-    let Some(user) = options.ssh_user.clone().or_else(|| env::var("USER").ok()) else {
+    let Some(user) = options
+        .ssh_user
+        .clone()
+        .or_else(|| env::var("USER").ok())
+        .or_else(|| env::var("USERNAME").ok())
+    else {
         return Ok(());
     };
     if !valid_ssh_user(&user) {
@@ -212,14 +233,11 @@ fn prepare_ssh_user(
     fs::write(&config, format!("Host *\n  User {user}\n"))
         .map_err(|source| HostError::io(&config, source))?;
     set_private_file(&config)?;
-    mounts.push(bind(
-        &config,
-        options.container_ssh_dir.join("config"),
-        true,
-    ));
+    let container_config = join_container_components(&options.container_ssh_dir, ["config"])?;
+    mounts.push(bind(&config, &container_config, true));
     env_map.insert(
         "CODEX_START_SSH_CONFIG".to_owned(),
-        options.container_ssh_dir.join("config").into_os_string(),
+        container_config.into_os_string(),
     );
     env_map.insert("CODEX_START_SSH_USER".to_owned(), user.into());
     Ok(())
@@ -234,6 +252,11 @@ fn prepare_gh_config(
     let Some(home) = home.filter(|_| options.gh_config) else {
         return;
     };
+    #[cfg(windows)]
+    let gh = env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map_or_else(|| home.join(".config/gh"), |path| path.join("GitHub CLI"));
+    #[cfg(not(windows))]
     let gh = home.join(".config/gh");
     if gh.is_dir() {
         mounts.push(bind(&gh, "/home/codex/.config/gh", false));
@@ -571,10 +594,14 @@ fn container_git_path(value: &str) -> Option<PathBuf> {
     if value == "~" {
         Some(PathBuf::from("/home/codex"))
     } else if let Some(relative) = value.strip_prefix("~/") {
-        Some(Path::new("/home/codex").join(relative))
+        codex_start_core::ContainerPath::parse("/home/codex")
+            .and_then(|path| path.join_relative(Path::new(relative)))
+            .ok()
+            .map(codex_start_core::ContainerPath::into_path_buf)
     } else {
-        let path = PathBuf::from(value);
-        path.is_absolute().then_some(path)
+        codex_start_core::ContainerPath::parse(value)
+            .ok()
+            .map(codex_start_core::ContainerPath::into_path_buf)
     }
 }
 

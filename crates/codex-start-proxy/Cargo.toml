@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+autobins = false
 
 [lib]
 name = "codex_start_proxy"
@@ -13,11 +14,11 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "codex-start-sidecar"
-path = "src/bin/sidecar.rs"
+path = "src/bin/sidecar_entry.rs"
 
 [[bin]]
 name = "codex-start-init"
-path = "src/bin/init.rs"
+path = "src/bin/init_entry.rs"
 
 [[bin]]
 name = "codex-start-host-ssh"
@@ -25,7 +26,7 @@ path = "src/bin/host-ssh.rs"
 
 [[bin]]
 name = "codex-start-ssh"
-path = "src/bin/ssh.rs"
+path = "src/bin/ssh_entry.rs"
 
 [dependencies]
 base64.workspace = true

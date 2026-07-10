@@ -31,6 +31,60 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings -W clippy::pedantic
       - run: cargo run --locked --package xtask -- validate
 
+  installers:
+    name: Installer fixtures
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate and exercise the POSIX installer
+        shell: bash
+        run: |
+          sh -n install.sh
+          sh -n tests/installers/test-install-sh.sh
+          tests/installers/test-install-sh.sh
+      - name: Parse and exercise the PowerShell installer
+        shell: pwsh
+        env:
+          CODEX_START_TEST_WINDOWS: "1"
+        run: |
+          $errors = $null
+          $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1),
+            [ref] $tokens,
+            [ref] $errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) { throw ($errors | Out-String) }
+          ./tests/installers/test-install-ps1.ps1
+
+  windows:
+    name: Windows Docker host
+    runs-on: windows-2025
+    env:
+      RUSTUP_TOOLCHAIN: 1.88.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+      - name: Exercise the native PowerShell installer
+        shell: pwsh
+        run: |
+          $errors = $null
+          $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1),
+            [ref] $tokens,
+            [ref] $errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) { throw ($errors | Out-String) }
+          ./tests/installers/test-install-ps1.ps1
+      - run: cargo check --locked --workspace --all-targets --all-features
+      - run: cargo test --locked --workspace --all-features
+
   coverage:
     name: Core and proxy coverage
     runs-on: ubuntu-24.04

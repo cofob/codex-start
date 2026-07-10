@@ -2,16 +2,23 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
+use std::path::PathBuf;
+
+#[cfg(unix)]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::config::{NetworkMode, ResourceLimits, RuntimeKind};
 use crate::environment::PortProtocol;
+use crate::{
+    config::{NetworkMode, ResourceLimits, RuntimeKind},
+    container_path::ContainerPath,
+};
 
 /// One Unix process argument, preserved as its exact byte sequence.
 ///
@@ -24,6 +31,7 @@ pub struct UnixArgument(OsString);
 
 impl UnixArgument {
     /// Constructs an argument from its exact Unix byte sequence.
+    #[cfg(unix)]
     #[must_use]
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         Self(OsString::from_vec(bytes))
@@ -36,6 +44,7 @@ impl UnixArgument {
     }
 
     /// Borrows the exact Unix byte sequence.
+    #[cfg(unix)]
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_bytes()
@@ -54,7 +63,14 @@ impl UnixArgument {
     }
 
     fn contains_nul(&self) -> bool {
-        self.as_bytes().contains(&0)
+        #[cfg(unix)]
+        {
+            self.as_bytes().contains(&0)
+        }
+        #[cfg(windows)]
+        {
+            self.0.encode_wide().any(|unit| unit == 0)
+        }
     }
 }
 
@@ -96,7 +112,17 @@ impl Serialize for UnixArgument {
         if let Some(value) = self.to_str() {
             serializer.serialize_str(value)
         } else {
-            BTreeMap::from([("unix_base64", BASE64.encode(self.as_bytes()))]).serialize(serializer)
+            #[cfg(unix)]
+            {
+                BTreeMap::from([("unix_base64", BASE64.encode(self.as_bytes()))])
+                    .serialize(serializer)
+            }
+            #[cfg(windows)]
+            {
+                Err(serde::ser::Error::custom(
+                    "Windows argument contains unpaired UTF-16 and cannot be represented in a Unix execution plan",
+                ))
+            }
         }
     }
 }
@@ -121,10 +147,23 @@ impl<'de> Deserialize<'de> for UnixArgument {
 
         match Representation::deserialize(deserializer)? {
             Representation::Utf8(value) => Ok(Self(value.into())),
-            Representation::UnixBase64(encoded) => BASE64
-                .decode(encoded.unix_base64)
-                .map(Self::from_bytes)
-                .map_err(de::Error::custom),
+            Representation::UnixBase64(encoded) => {
+                let bytes = BASE64
+                    .decode(encoded.unix_base64)
+                    .map_err(de::Error::custom)?;
+                #[cfg(unix)]
+                {
+                    Ok(Self::from_bytes(bytes))
+                }
+                #[cfg(windows)]
+                {
+                    String::from_utf8(bytes).map(Self::from).map_err(|_| {
+                        de::Error::custom(
+                            "non-UTF-8 Unix arguments cannot be represented on Windows",
+                        )
+                    })
+                }
+            }
         }
     }
 }
@@ -444,7 +483,7 @@ impl ContainerPlan {
         if self.image.trim().is_empty() {
             return Err(ContainerPlanError::Invalid("image cannot be empty".into()));
         }
-        if !self.workdir.is_absolute() {
+        if ContainerPath::new(&self.workdir).is_err() {
             return Err(ContainerPlanError::Invalid(format!(
                 "workdir must be absolute: {}",
                 self.workdir.display()
@@ -599,7 +638,7 @@ fn validate_mounts(mounts: &[MountPlan]) -> Result<(), ContainerPlanError> {
         if !ids.insert(&mount.id) {
             return Err(ContainerPlanError::DuplicateResource(mount.id.clone()));
         }
-        if !mount.target.is_absolute() || mount.target == Path::new("/") {
+        if ContainerPath::new(&mount.target).is_err() || mount.target.as_os_str() == "/" {
             return Err(ContainerPlanError::Invalid(format!(
                 "mount `{}` target must be an absolute non-root path",
                 mount.id
@@ -648,9 +687,11 @@ fn validate_secrets(secrets: &[SecretMount]) -> Result<(), ContainerPlanError> {
     let mut paths = BTreeSet::new();
     for secret in secrets {
         validate_runtime_name("secret", &secret.name)?;
+        let container_path = ContainerPath::new(&secret.path).ok();
         if secret.provider.trim().is_empty()
-            || !secret.path.is_absolute()
-            || !secret.path.starts_with("/run/secrets")
+            || container_path
+                .as_ref()
+                .is_none_or(|path| !path.starts_with("/run/secrets"))
             || !names.insert(&secret.name)
             || !paths.insert(&secret.path)
         {
@@ -883,6 +924,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn non_utf8_argv_roundtrips_through_the_complete_plan() {
         let non_utf8 = UnixArgument::from_bytes(vec![b'f', 0x80, b'o']);
         assert_eq!(
@@ -915,6 +957,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn validation_rejects_only_an_actual_nul_byte_in_lossless_argv() {
         let mut plan = valid_plan();
         plan.command = vec![UnixArgument::from_bytes(vec![0xC0, 0x80])];
@@ -1017,6 +1060,7 @@ mod tests {
     }
 
     proptest! {
+        #[cfg(unix)]
         #[test]
         fn arbitrary_unix_arguments_roundtrip_through_json(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
             let argument = UnixArgument::from_bytes(bytes.clone());
@@ -1026,6 +1070,7 @@ mod tests {
             prop_assert_eq!(decoded.as_bytes(), bytes.as_slice());
         }
 
+        #[cfg(unix)]
         #[test]
         fn nul_detection_uses_exact_argument_bytes(
             prefix in prop::collection::vec(1_u8..=u8::MAX, 0..128),

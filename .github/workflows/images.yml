@@ -3,8 +3,22 @@ name: Publish OCI images
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: true
+        type: string
+      release_tag:
+        description: Immutable release tag applied to every image
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,140 +29,296 @@ permissions:
 env:
   REGISTRY: ghcr.io
 
+concurrency:
+  group: images-${{ github.repository }}-${{ inputs.release_tag || github.ref }}
+  cancel-in-progress: ${{ inputs.release_tag == '' }}
+
 jobs:
-  environments:
-    name: Publish ${{ matrix.environment }}
+  images:
+    name: Publish ${{ matrix.name }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        environment: [generic, web, uv, rust]
+        include:
+          - name: generic
+            repository: codex-start-generic
+            dockerfile: images/environment/Dockerfile
+            target: generic
+            smoke_program: codex
+            smoke_argument: --version
+          - name: web
+            repository: codex-start-web
+            dockerfile: images/environment/Dockerfile
+            target: web
+            smoke_program: codex
+            smoke_argument: --version
+          - name: uv
+            repository: codex-start-uv
+            dockerfile: images/environment/Dockerfile
+            target: uv
+            smoke_program: uv
+            smoke_argument: --version
+          - name: rust
+            repository: codex-start-rust
+            dockerfile: images/environment/Dockerfile
+            target: rust
+            smoke_program: rustc
+            smoke_argument: --version
+          - name: sidecar
+            repository: codex-start-sidecar
+            dockerfile: images/sidecar/Dockerfile
+            target: ""
+            smoke_program: codex-start-sidecar
+            smoke_argument: --help
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: sigstore/cosign-installer@v3.8.1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: dtolnay/rust-toolchain@4e529fb27e59237866a6523e61ab248308c068b4 # 1.88.0
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
       - name: Normalize image owner
         id: owner
         shell: bash
-        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >>"$GITHUB_OUTPUT"
-      - uses: docker/login-action@v3
+        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >>"${GITHUB_OUTPUT}"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Derive image references
+        id: reference
+        shell: bash
+        env:
+          OWNER: ${{ steps.owner.outputs.value }}
+          REPOSITORY: ${{ matrix.repository }}
+        run: |
+          set -euo pipefail
+          image="${REGISTRY}/${OWNER}/${REPOSITORY}"
+          echo "image=${image}" >>"${GITHUB_OUTPUT}"
+          echo "staging=${image}:staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >>"${GITHUB_OUTPUT}"
       - name: Read locked build arguments
         id: lock
         shell: bash
         run: |
-          echo 'args<<LOCKED_ARGS' >>"$GITHUB_OUTPUT"
-          cargo run --quiet --locked --package xtask -- build-args >>"$GITHUB_OUTPUT"
-          echo 'LOCKED_ARGS' >>"$GITHUB_OUTPUT"
-      - uses: docker/metadata-action@v5
+          echo 'args<<LOCKED_ARGS' >>"${GITHUB_OUTPUT}"
+          cargo run --quiet --locked --package xtask -- build-args >>"${GITHUB_OUTPUT}"
+          echo 'LOCKED_ARGS' >>"${GITHUB_OUTPUT}"
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         id: metadata
         with:
-          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/codex-start-${{ matrix.environment }}
+          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/${{ matrix.repository }}
           tags: |
-            type=ref,event=tag
-            type=raw,value=edge,enable={{is_default_branch}}
-            type=sha
-      - uses: docker/build-push-action@v6
+            type=raw,value=${{ inputs.release_tag }},enable=${{ inputs.release_tag != '' }}
+            type=raw,value=edge,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+            type=sha,enable=${{ inputs.release_tag == '' }}
+      - name: Reuse an existing immutable release image
+        id: release_state
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          FINAL_TAGS: ${{ steps.metadata.outputs.tags }}
+        run: |
+          set -euo pipefail
+          echo "existing=false" >>"${GITHUB_OUTPUT}"
+          if [[ -z "${RELEASE_TAG}" ]]; then
+            exit 0
+          fi
+          final="$(printf '%s\n' "${FINAL_TAGS}" | sed -n '1p')"
+          echo "final=${final}" >>"${GITHUB_OUTPUT}"
+          if inspection="$(docker buildx imagetools inspect "${final}" 2>&1)"; then
+            digest="$(awk '$1 == "Digest:" { print $2; exit }' <<<"${inspection}")"
+            if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "could not read the digest for existing immutable tag ${final}" >&2
+              exit 1
+            fi
+            echo "existing=true" >>"${GITHUB_OUTPUT}"
+            echo "digest=${digest}" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ "${inspection}" != *"not found"* && "${inspection}" != *"manifest unknown"* ]]; then
+            printf '%s\n' "${inspection}" >&2
+            echo "could not prove immutable tag ${final} is absent" >&2
+            exit 1
+          fi
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        if: steps.release_state.outputs.existing != 'true'
         id: build
         with:
           context: .
-          file: images/environment/Dockerfile
-          target: ${{ matrix.environment }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
           platforms: linux/amd64,linux/arm64
           build-args: ${{ steps.lock.outputs.args }}
           push: true
-          tags: ${{ steps.metadata.outputs.tags }}
+          tags: ${{ steps.reference.outputs.staging }}
           labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha,scope=environment-${{ matrix.environment }}
-          cache-to: type=gha,mode=max,scope=environment-${{ matrix.environment }}
+          cache-from: type=gha,scope=image-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.name }}
           provenance: mode=max
           sbom: true
-      - name: Sign image index
+      - name: Resolve the image digest
+        id: resolved
+        shell: bash
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/codex-start-${{ matrix.environment }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: cosign sign --yes "$IMAGE@$DIGEST"
-      - uses: aquasecurity/trivy-action@v0.36.0
+          EXISTING: ${{ steps.release_state.outputs.existing }}
+          EXISTING_DIGEST: ${{ steps.release_state.outputs.digest }}
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ "${EXISTING}" == true ]]; then
+            digest="${EXISTING_DIGEST}"
+          else
+            digest="${BUILT_DIGEST}"
+          fi
+          [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=${digest}" >>"${GITHUB_OUTPUT}"
+      - name: Sign and verify image index
+        shell: bash
+        env:
+          IMAGE: ${{ steps.reference.outputs.image }}
+          DIGEST: ${{ steps.resolved.outputs.digest }}
+          EXISTING: ${{ steps.release_state.outputs.existing }}
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/images.yml@${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${EXISTING}" != true ]]; then
+            cosign sign --yes "${IMAGE}@${DIGEST}"
+          fi
+          cosign verify \
+            --certificate-identity "${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${IMAGE}@${DIGEST}"
+      - name: Verify index platforms and BuildKit attestations
+        id: inspect
+        shell: bash
+        env:
+          IMAGE: ${{ steps.reference.outputs.image }}
+          DIGEST: ${{ steps.resolved.outputs.digest }}
+        run: |
+          set -euo pipefail
+          reference="${IMAGE}@${DIGEST}"
+          docker buildx imagetools inspect --raw "${reference}" >index.json
+          jq -e '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length == 1' index.json
+          jq -e '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")] | length == 1' index.json
+          amd64_digest="$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' index.json)"
+          arm64_digest="$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest' index.json)"
+          for platform in linux/amd64 linux/arm64; do
+            provenance="$(docker buildx imagetools inspect "${reference}" \
+              --format "{{json (index .Provenance \"${platform}\")}}")"
+            sbom="$(docker buildx imagetools inspect "${reference}" \
+              --format "{{json (index .SBOM \"${platform}\")}}")"
+            jq -e '.SLSA.buildType | type == "string" and length > 0' <<<"${provenance}"
+            jq -e '.SPDX.spdxVersion | startswith("SPDX-")' <<<"${sbom}"
+          done
+          {
+            echo "amd64_digest=${amd64_digest}"
+            echo "arm64_digest=${arm64_digest}"
+          } >>"${GITHUB_OUTPUT}"
+      - name: Smoke-test both image variants
+        shell: bash
+        env:
+          IMAGE: ${{ steps.reference.outputs.image }}
+          AMD64_DIGEST: ${{ steps.inspect.outputs.amd64_digest }}
+          ARM64_DIGEST: ${{ steps.inspect.outputs.arm64_digest }}
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/amd64 \
+            --entrypoint "${{ matrix.smoke_program }}" \
+            "${IMAGE}@${AMD64_DIGEST}" "${{ matrix.smoke_argument }}"
+          docker run --rm --platform linux/arm64 \
+            --entrypoint "${{ matrix.smoke_program }}" \
+            "${IMAGE}@${ARM64_DIGEST}" "${{ matrix.smoke_argument }}"
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/codex-start-${{ matrix.environment }}@${{ steps.build.outputs.digest }}
+          image-ref: ${{ steps.reference.outputs.image }}@${{ steps.inspect.outputs.amd64_digest }}
           format: sarif
-          output: trivy.sarif
+          output: trivy-amd64.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
-      - uses: github/codeql-action/upload-sarif@v4
-        if: always() && github.event.repository.private == false && hashFiles('trivy.sarif') != ''
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        if: always() && steps.inspect.outcome == 'success'
         with:
-          sarif_file: trivy.sarif
-          category: image-${{ matrix.environment }}
+          image-ref: ${{ steps.reference.outputs.image }}@${{ steps.inspect.outputs.arm64_digest }}
+          format: sarif
+          output: trivy-arm64.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4
+        if: always() && github.event.repository.private == false && hashFiles('trivy-amd64.sarif') != ''
+        with:
+          sarif_file: trivy-amd64.sarif
+          category: image-${{ matrix.name }}-amd64
+      - uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4
+        if: always() && github.event.repository.private == false && hashFiles('trivy-arm64.sarif') != ''
+        with:
+          sarif_file: trivy-arm64.sarif
+          category: image-${{ matrix.name }}-arm64
+      - name: Record the verified index for gated promotion
+        shell: bash
+        env:
+          NAME: ${{ matrix.name }}
+          IMAGE: ${{ steps.reference.outputs.image }}
+          DIGEST: ${{ steps.resolved.outputs.digest }}
+          FINAL_TAGS: ${{ steps.metadata.outputs.tags }}
+          EXISTING: ${{ steps.release_state.outputs.existing }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          jq --null-input \
+            --arg name "${NAME}" \
+            --arg image "${IMAGE}" \
+            --arg digest "${DIGEST}" \
+            --arg tags "${FINAL_TAGS}" \
+            --arg release_tag "${RELEASE_TAG}" \
+            --argjson existing "${EXISTING}" \
+            '{name: $name, image: $image, digest: $digest, tags: $tags, release_tag: $release_tag, existing: $existing}' \
+            >"image-promotion-${NAME}.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-promotion-${{ matrix.name }}
+          path: image-promotion-${{ matrix.name }}.json
+          if-no-files-found: error
+          retention-days: 1
 
-  sidecar:
-    name: Publish sidecar
+  promote:
+    name: Promote verified ${{ matrix.name }} image
+    if: inputs.release_tag == ''
+    needs: images
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [generic, web, uv, rust, sidecar]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: sigstore/cosign-installer@v3.8.1
-      - name: Normalize image owner
-        id: owner
-        shell: bash
-        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >>"$GITHUB_OUTPUT"
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Read locked build arguments
-        id: lock
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: image-promotion-${{ matrix.name }}
+          path: promotion
+      - name: Publish edge and commit tags after every image gate passes
         shell: bash
-        run: |
-          echo 'args<<LOCKED_ARGS' >>"$GITHUB_OUTPUT"
-          cargo run --quiet --locked --package xtask -- build-args >>"$GITHUB_OUTPUT"
-          echo 'LOCKED_ARGS' >>"$GITHUB_OUTPUT"
-      - uses: docker/metadata-action@v5
-        id: metadata
-        with:
-          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/codex-start-sidecar
-          tags: |
-            type=ref,event=tag
-            type=raw,value=edge,enable={{is_default_branch}}
-            type=sha
-      - uses: docker/build-push-action@v6
-        id: build
-        with:
-          context: .
-          file: images/sidecar/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          build-args: ${{ steps.lock.outputs.args }}
-          push: true
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha,scope=sidecar
-          cache-to: type=gha,mode=max,scope=sidecar
-          provenance: mode=max
-          sbom: true
-      - name: Sign image index
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/codex-start-sidecar
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: cosign sign --yes "$IMAGE@$DIGEST"
-      - uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/codex-start-sidecar@${{ steps.build.outputs.digest }}
-          format: sarif
-          output: trivy.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-      - uses: github/codeql-action/upload-sarif@v4
-        if: always() && github.event.repository.private == false && hashFiles('trivy.sarif') != ''
-        with:
-          sarif_file: trivy.sarif
-          category: image-sidecar
+          RECORD: promotion/image-promotion-${{ matrix.name }}.json
+        run: |
+          set -euo pipefail
+          image="$(jq -r .image "${RECORD}")"
+          digest="$(jq -r .digest "${RECORD}")"
+          existing="$(jq -r .existing "${RECORD}")"
+          [[ "${existing}" == false ]] || exit 0
+          jq -r '.tags | split("\n")[]' "${RECORD}" | while IFS= read -r tag; do
+            [[ -n "${tag}" ]] || continue
+            docker buildx imagetools create --tag "${tag}" "${image}@${digest}"
+            promoted="$(docker buildx imagetools inspect "${tag}" \
+              | awk '$1 == "Digest:" { print $2; exit }')"
+            test "${promoted}" = "${digest}"
+          done

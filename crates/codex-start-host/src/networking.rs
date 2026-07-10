@@ -5,7 +5,6 @@ use std::{
     ffi::OsString,
     fs::OpenOptions,
     io::Write,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     thread,
     time::Duration,
@@ -74,12 +73,7 @@ impl EgressAuthentication {
             Uuid::new_v4().simple(),
             Uuid::new_v4().simple()
         ));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&token_path)
-            .map_err(|source| HostError::io(&token_path, source))?;
+        let mut file = open_private_new(&token_path)?;
         file.write_all(token.as_bytes())
             .map_err(|source| HostError::io(&token_path, source))?;
         file.sync_all()
@@ -139,17 +133,25 @@ impl EgressAuthentication {
 }
 
 fn write_private_file(path: &Path, contents: &[u8]) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|source| HostError::io(path, source))?;
+    let mut file = open_private_new(path)?;
     file.write_all(contents)
         .map_err(|source| HostError::io(path, source))?;
     file.sync_all()
         .map_err(|source| HostError::io(path, source))?;
     set_private_file(path)
+}
+
+fn open_private_new(path: &Path) -> Result<std::fs::File> {
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options
+        .open(path)
+        .map_err(|source| HostError::io(path, source))
 }
 
 /// Complete inputs for one managed network boundary.
@@ -594,11 +596,19 @@ pub(crate) fn limited_name(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, ffi::OsString, fs, os::unix::fs::PermissionsExt};
+    use std::{ffi::OsString, fs};
+
+    #[cfg(unix)]
+    use std::collections::BTreeMap;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     use codex_start_proxy::container_init::InitSpec;
 
-    use super::{EgressAuthentication, limited_name, sidecar_image_tag};
+    #[cfg(unix)]
+    use super::sidecar_image_tag;
+    use super::{EgressAuthentication, limited_name};
 
     #[test]
     fn egress_token_stays_out_of_spec_and_final_sidecar_identity_is_non_root() {
@@ -632,6 +642,7 @@ mod tests {
             ]
             .map(OsString::from)
         );
+        #[cfg(unix)]
         assert_eq!(
             fs::metadata(authentication.directory.path().join("token"))
                 .expect("metadata")
@@ -654,6 +665,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn sidecar_tag_tracks_entry_type_target_and_mode() {
         let root = tempfile::tempdir().expect("root");
         let root = root.path();
@@ -701,6 +713,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn sidecar_tag_rejects_symlinks_outside_the_context() {
         let root = tempfile::tempdir().expect("root");
         let root = root.path();

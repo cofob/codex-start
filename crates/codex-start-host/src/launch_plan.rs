@@ -8,13 +8,13 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     net::IpAddr,
-    os::unix::ffi::OsStrExt,
     path::PathBuf,
 };
 
 use codex_start_core::{
-    ContainerPlan, ContainerPlanError, HostServiceSpec, MountPlan, MountSource, NetworkMode,
-    NetworkPlan, PortProtocol, PublishedPort, ResourceLimits, RuntimeKind, UnixArgument,
+    ContainerPath, ContainerPlan, ContainerPlanError, HostServiceSpec, MountPlan, MountSource,
+    NetworkMode, NetworkPlan, PortProtocol, PublishedPort, ResourceLimits, RuntimeKind,
+    UnixArgument,
 };
 use codex_start_proxy::container_init::{
     CommandSpec as PrepareCommand, ExecSpec, InitServiceSpec, InitSpec,
@@ -528,7 +528,7 @@ fn validate_runtime(plan: &HostLaunchPlan) -> Result<(), LaunchPlanError> {
         ));
     }
     if let Some(workdir) = &runtime.workdir {
-        if !workdir.is_absolute() || os_contains_nul(workdir.as_os_str()) {
+        if ContainerPath::new(workdir).is_err() || os_contains_nul(workdir.as_os_str()) {
             return Err(LaunchPlanError::Invalid(format!(
                 "runtime workdir must be an absolute NUL-free path: {}",
                 workdir.display()
@@ -832,7 +832,7 @@ fn validate_host_services(metadata: &HostServiceMetadata) -> Result<(), LaunchPl
     if let Some(path) = metadata
         .ownership_paths
         .iter()
-        .find(|path| !path.is_absolute() || os_contains_nul(path.as_os_str()))
+        .find(|path| ContainerPath::new(path).is_err() || os_contains_nul(path.as_os_str()))
     {
         return Err(LaunchPlanError::Invalid(format!(
             "invalid host-service ownership path {}",
@@ -1004,11 +1004,11 @@ const fn planned_mount_kind(kind: RuntimeMountKind) -> PlannedMountKind {
 }
 
 fn argument_contains_nul(value: &UnixArgument) -> bool {
-    value.as_bytes().contains(&0)
+    value.as_os_str().as_encoded_bytes().contains(&0)
 }
 
 fn os_contains_nul(value: &OsStr) -> bool {
-    value.as_bytes().contains(&0)
+    value.as_encoded_bytes().contains(&0)
 }
 
 fn valid_environment_name(value: &str) -> bool {
@@ -1043,7 +1043,7 @@ pub enum LaunchPlanError {
     Serialize(String),
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::{
         collections::{BTreeMap, BTreeSet},

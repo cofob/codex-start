@@ -488,11 +488,18 @@ fn copy_symbolic_link(source: &Path, relative: &Path, target: &Path) -> Result<(
     ensure_missing_path(target)?;
     #[cfg(unix)]
     std::os::unix::fs::symlink(&link, target).map_err(|error| HostError::io(target, error))?;
-    #[cfg(not(unix))]
-    return Err(unsafe_path(
-        source,
-        "symbolic-link import is not supported on this platform",
-    ));
+    #[cfg(windows)]
+    {
+        let target_is_dir = fs::metadata(source)
+            .map_err(|error| HostError::io(source, error))?
+            .is_dir();
+        if target_is_dir {
+            std::os::windows::fs::symlink_dir(&link, target)
+        } else {
+            std::os::windows::fs::symlink_file(&link, target)
+        }
+        .map_err(|error| HostError::io(target, error))?;
+    }
     Ok(())
 }
 
