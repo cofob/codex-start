@@ -433,7 +433,16 @@ fn sidecar_request(
         detach: true,
         read_only: true,
         drop_all_capabilities: true,
-        add_capabilities: vec!["SETUID".to_owned(), "SETGID".to_owned()],
+        // Docker preserves host ownership on bind mounts.  The init process
+        // starts as container root but has no ownership of the private host
+        // authentication directory, so it needs this read-only bypass long
+        // enough to load its spec and token.  It then execs the sidecar as
+        // the unprivileged identity specified in the init spec.
+        add_capabilities: vec![
+            "DAC_READ_SEARCH".to_owned(),
+            "SETUID".to_owned(),
+            "SETGID".to_owned(),
+        ],
         no_new_privileges: true,
         user: Some("0:0".to_owned()),
         ..RunRequest::default()

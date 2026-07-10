@@ -238,7 +238,7 @@ jobs:
           mkdir -p "${root}/project"
           zstd --decompress --quiet \
             "${RUNNER_TEMP}/nested-podman-image/codex-start-generic.tar.zst" \
-            --output "${root}/generic-image.tar"
+            -o "${root}/generic-image.tar"
           cat >"${root}/config.toml" <<'EOF'
           schema_version = 1
 
