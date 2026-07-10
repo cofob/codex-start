@@ -28,6 +28,9 @@ codex-start run rust -- exec --json "run the tests"
 # Open a shell with the same mounts, caches, home, and network policy.
 codex-start shell uv
 
+# Opt out of the default persistent session lifecycle for one run.
+codex-start run --ephemeral
+
 # Merge ordered local branches or managed worktrees into the current branch.
 codex-start merge feature-api agent-ui
 
@@ -58,7 +61,19 @@ codex-start resources list
 codex-start resources logs RUN_ID
 codex-start resources stop RUN_ID
 codex-start resources cleanup
+codex-start session list
+codex-start session attach SESSION
+codex-start session logs SESSION --follow
+codex-start session refresh SESSION
+codex-start session stop SESSION
+codex-start session recovery enable
 ```
+
+`run` is session-managed by default. A bare interactive run keeps a Codex app-server in the workload and reconnects TUI clients to it; an explicit command after `--` runs as a managed background job. Closing or killing the client terminal does not stop either kind. Interactive sessions can restart and resume their most recent project-scoped Codex thread; non-interactive jobs are deliberately never replayed after a reboot. Use `--ephemeral` for the previous foreground disposable lifecycle.
+
+Persistent sessions force the authenticated SSH-agent relay so `session attach` and `session refresh` can retarget new connections to the caller's current `SSH_AUTH_SOCK`. The container-side socket remains stable. Normal TUI exit prompts to detach or stop; terminal loss detaches implicitly.
+
+Cross-reboot recovery is opt-in. `session recovery enable` installs a user launchd service on macOS or systemd user service on Linux. It waits for the configured Docker or Podman engine rather than starting the engine itself, then reconciles interactive containers. Rootless Podman therefore requires an active user systemd instance. This first implementation restores the container/app-server path; recreating host-side SSH, browser, OAuth, and declared-service listeners after a full host reboot is still pending. SSH-agent retargeting works while the detached session supervisor survives (including terminal loss and explicit stop/restart).
 
 `worktree cleanup` refuses dirty managed worktrees and deletes only merged owned branches; add `--force` to remove dirty worktrees and unmerged owned branches. `resources cleanup` removes stopped/stale owned resources and reports running workloads as skipped; add `--force` to stop and remove running workloads too.
 

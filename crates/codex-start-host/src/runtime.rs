@@ -323,6 +323,11 @@ impl Runtime {
         self.kind
     }
 
+    /// Exact engine executable selected by detection or an override.
+    pub fn program(&self) -> &OsStr {
+        &self.program
+    }
+
     /// Engine-provided hostname that resolves to its host/VM gateway.
     pub const fn host_gateway_name(&self) -> &'static str {
         match self.kind {
@@ -910,6 +915,42 @@ impl Runtime {
     /// Stop a running container.
     pub fn stop_container(&self, name: &str) -> Result<()> {
         run_checked(&CommandSpec::new(&self.program).args(["container", "stop", name])).map(|_| ())
+    }
+
+    /// Start an existing stopped container without attaching to its streams.
+    pub fn start_container(&self, name: &str) -> Result<()> {
+        run_checked(&CommandSpec::new(&self.program).args(["container", "start", name])).map(|_| ())
+    }
+
+    /// Attach the current terminal to a container without proxying host signals.
+    ///
+    /// Disabling signal proxying ensures a terminal hangup disconnects the
+    /// client rather than terminating the session's primary process.
+    pub fn attach(&self, name: &str) -> Result<u8> {
+        run_interactive(&CommandSpec::new(&self.program).args([
+            "attach",
+            "--sig-proxy=false",
+            name,
+        ]))
+    }
+
+    /// Read the exit code of a stopped container when the engine reports one.
+    pub fn container_exit_code(&self, name: &str) -> Result<Option<u8>> {
+        let output = run_capture(&CommandSpec::new(&self.program).args([
+            "container",
+            "inspect",
+            "--format",
+            "{{.State.ExitCode}}",
+            name,
+        ]))?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        Ok(output
+            .stdout_text()
+            .parse::<u16>()
+            .ok()
+            .and_then(|value| u8::try_from(value).ok()))
     }
 
     /// Run an interactive command in an existing container.

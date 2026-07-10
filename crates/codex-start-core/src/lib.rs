@@ -20,8 +20,8 @@ pub use config::{
     ForwardingPatch, GitConfig, GitPatch, HomeConfig, HomeKind, McpOauthCallback, MemorySize,
     MemorySwapLimit, MergeConfig, MergePatch, NetworkMode, ProfileConfig, Provenance, ProxyConfig,
     ProxyPatch, ResolvedConfig, ResourceLimits, ResourcePatch, ResourceValues, RuntimeKind,
-    SecretProvider, SecretProviderKind, SshAgentBridge, TtyMode, Ulimit, ValueSource, WorktreeMode,
-    environment_patch,
+    SecretProvider, SecretProviderKind, SessionConfig, SessionExitBehavior, SessionPatch,
+    SshAgentBridge, TtyMode, Ulimit, ValueSource, WorktreeMode, environment_patch,
 };
 pub use environment::{
     BuildSpec, CacheScope, CacheSpec, CommandSpec, EnvironmentError, EnvironmentManifest,

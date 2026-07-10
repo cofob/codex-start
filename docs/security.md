@@ -23,7 +23,7 @@ The sidecar listen port and connection, header, handshake, idle, concurrency, an
 
 Direct Unix-socket mounts are used for SSH/GPG agents when the runtime can carry them. Docker Desktop's `/run/host-services/ssh-auth.sock` is used on macOS Docker; Linux uses the discovered host socket. `ssh_agent_bridge = "tcp"` forces a TCP-to-Unix fallback, and macOS Podman `auto` selects it automatically. GPG uses a fallback on macOS and Podman.
 
-Fallback listeners bind an ephemeral wildcard host port because a native Linux engine reaches them through its bridge gateway. A fresh per-run token is required before a listener touches its Unix or TCP target. The read-only token directory is mounted at `/run/codex-start/secrets/host-services`; this path is separate from workload secrets. Listener tasks are health-checked before the workload starts and shut down with the run.
+Fallback listeners bind an ephemeral wildcard host port because a native Linux engine reaches them through its bridge gateway. A fresh per-run token is required before a listener touches its Unix or TCP target. The read-only token directory is mounted at `/run/codex-start/secrets/host-services`; this path is separate from workload secrets. Listener tasks are health-checked before the workload starts. Foreground runs shut them down with the workload; a persistent session supervisor retains them across terminal loss and explicit stop/restart, while full host-reboot listener restoration remains pending.
 
 Host integration features are independently configurable:
 
@@ -48,6 +48,8 @@ Dry-run records provider names, target child variables, and non-secret `/run/sec
 ## Dry-run and local state
 
 `--dry-run` does not contact Docker/Podman or create runtime resources, worktrees, homes, secret bundles, or host listeners. It validates a typed logical launch plan, including all raw Codex argv, network rules, mounts, init preparation, secret metadata, and environment host-service declarations. Host socket discovery, authenticated addresses, and OAuth ephemeral ports are finalized only during a real launch and are identified as such in plan warnings.
+
+Persistent session records and launch bundles are stored in user-only XDG data directories. Records expose only redacted metadata; resolved secret files and relay tokens remain mode `0600`, are never placed in engine environment configuration, and are deleted with session runtime state. Session SSH forwarding always uses the authenticated relay rather than a direct socket mount. Its private target file is re-read for each new connection, permission-checked, and atomically replaced when an attachment supplies a new `SSH_AUTH_SOCK`; existing connections continue using their original target.
 
 For `merge --dry-run`, source resolution and clean-state validation are read-only Git probes. The plan includes the current target mount, shared Git directory, read-only named source mounts, merge model, generated Codex argv, and a planned result-bundle mount; no agent, merge, or result bundle is started.
 

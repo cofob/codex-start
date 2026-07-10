@@ -49,6 +49,33 @@ pub struct HostLaunchPlan {
     /// Host endpoints intentionally exposed to the workload.
     #[serde(default)]
     pub host_services: HostServiceMetadata,
+    /// Persistent lifecycle selected for this invocation.
+    #[serde(default)]
+    pub session: SessionMetadata,
+}
+
+/// Redacted persistent-session behavior included in dry-run plans.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionMetadata {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub kind: Option<PlannedSessionKind>,
+    #[serde(default)]
+    pub reboot_replay: bool,
+    #[serde(default)]
+    pub refresh_ssh_on_attach: bool,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// Persistent execution shape chosen from the raw Codex invocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannedSessionKind {
+    Interactive,
+    Job,
 }
 
 /// Host-engine fields that are absent from, or intentionally more exact than,
@@ -286,6 +313,7 @@ impl HostLaunchPlan {
             init,
             forwarding,
             host_services,
+            session: SessionMetadata::default(),
         };
         plan.validate()?;
         Ok(plan)

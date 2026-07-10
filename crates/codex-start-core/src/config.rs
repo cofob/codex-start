@@ -60,6 +60,50 @@ pub enum SshAgentBridge {
     Tcp,
 }
 
+/// Action offered when the last interactive client exits normally.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionExitBehavior {
+    /// Ask whether to keep or stop the session.
+    #[default]
+    Prompt,
+    /// Keep the session running without prompting.
+    Detach,
+    /// Stop the session when the client exits.
+    Stop,
+}
+
+/// Partial persistent-session settings used in one configuration layer.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_tui_exit: Option<SessionExitBehavior>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_ssh_on_attach: Option<bool>,
+}
+
+/// Fully resolved persistent-session behavior.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionConfig {
+    pub enabled: bool,
+    pub on_tui_exit: SessionExitBehavior,
+    pub refresh_ssh_on_attach: bool,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            on_tui_exit: SessionExitBehavior::Prompt,
+            refresh_ssh_on_attach: true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HomeKind {
@@ -1180,6 +1224,8 @@ pub struct ConfigPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<ResourcePatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<SessionPatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub codex: Option<CodexPatch>,
 }
 
@@ -1229,6 +1275,11 @@ impl ConfigPatch {
                 header_timeout_seconds: Some(10),
                 max_header_bytes: Some(65_536),
                 handshake_timeout_seconds: Some(5),
+            }),
+            sessions: Some(SessionPatch {
+                enabled: Some(true),
+                on_tui_exit: Some(SessionExitBehavior::Prompt),
+                refresh_ssh_on_attach: Some(true),
             }),
             codex: Some(CodexPatch {
                 config: BTreeMap::from([
@@ -1398,6 +1449,7 @@ pub struct EffectiveConfig {
     pub merge: MergeConfig,
     pub proxy: ProxyConfig,
     pub resources: ResourceLimits,
+    pub sessions: SessionConfig,
     pub codex: CodexConfig,
     pub homes: BTreeMap<String, HomeConfig>,
     #[serde(skip_serializing, default)]
@@ -1817,6 +1869,7 @@ fn effective_from_patch(
     let merge = patch.merge.unwrap_or_default();
     let proxy = patch.proxy.unwrap_or_default();
     let resources = patch.resources.unwrap_or_default();
+    let sessions = patch.sessions.unwrap_or_default();
     let codex = patch.codex.unwrap_or_default();
     Ok(EffectiveConfig {
         schema_version: CONFIG_SCHEMA_VERSION,
@@ -1878,6 +1931,11 @@ fn effective_from_patch(
             handshake_timeout_seconds: proxy.handshake_timeout_seconds.unwrap_or(5),
         },
         resources: resources.into(),
+        sessions: SessionConfig {
+            enabled: sessions.enabled.unwrap_or(true),
+            on_tui_exit: sessions.on_tui_exit.unwrap_or_default(),
+            refresh_ssh_on_attach: sessions.refresh_ssh_on_attach.unwrap_or(true),
+        },
         codex: CodexConfig {
             profile: codex.profile,
             args: codex.args.unwrap_or_default(),
@@ -2529,6 +2587,40 @@ pub enum ConfigError {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn persistent_sessions_default_on_and_support_normal_precedence() {
+        let defaults = ConfigResolver::new().resolve().expect("defaults");
+        assert!(defaults.config.sessions.enabled);
+        assert_eq!(
+            defaults.config.sessions.on_tui_exit,
+            SessionExitBehavior::Prompt
+        );
+        assert!(defaults.config.sessions.refresh_ssh_on_attach);
+
+        let mut resolver = ConfigResolver::new();
+        resolver
+            .add_layer(ConfigLayer::new(
+                ConfigLayerKind::CommandLine,
+                "ephemeral CLI",
+                ConfigPatch {
+                    sessions: Some(SessionPatch {
+                        enabled: Some(false),
+                        ..SessionPatch::default()
+                    }),
+                    ..ConfigPatch::default()
+                },
+            ))
+            .expect("session override");
+        assert!(
+            !resolver
+                .resolve()
+                .expect("resolved")
+                .config
+                .sessions
+                .enabled
+        );
+    }
 
     #[test]
     fn merge_model_has_a_dedicated_default_and_normal_precedence() {

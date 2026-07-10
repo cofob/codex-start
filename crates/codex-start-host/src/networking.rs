@@ -417,6 +417,10 @@ fn sidecar_request(
     let mut sidecar_argv = vec![OsString::from("/usr/local/bin/codex-start-sidecar")];
     sidecar_argv.extend(sidecar_command(options));
     authentication.write_sidecar_spec(sidecar_argv)?;
+    let mut extra_args = Vec::new();
+    if std::env::var_os("CODEX_START_SESSION_INTERACTIVE").is_some() {
+        extra_args.push(OsString::from("--restart=unless-stopped"));
+    }
     Ok(RunRequest {
         name,
         image,
@@ -445,6 +449,7 @@ fn sidecar_request(
         ],
         no_new_privileges: true,
         user: Some("0:0".to_owned()),
+        extra_args,
         ..RunRequest::default()
     })
 }

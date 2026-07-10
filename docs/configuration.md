@@ -47,6 +47,17 @@ The scalar settings are:
 | `allow_ssh_hosts` | Host-SSH authority rules; ports default to 22. |
 | `secret_refs` | Map child environment-variable names to global providers. |
 
+Persistent sessions are enabled by default:
+
+```toml
+[settings.sessions]
+enabled = true
+on_tui_exit = "prompt" # prompt, detach, or stop
+refresh_ssh_on_attach = true
+```
+
+`codex-start run --ephemeral` disables session management at CLI precedence; `--persistent` forces it on. These runner flags are parsed only before the `--` passthrough delimiter, so native Codex flags with the same spelling after the delimiter remain untouched. Session metadata and private launch material live below the XDG data root. Redacted `session list/show` output never includes the host SSH-agent path, authentication tokens, or resolved secret values.
+
 `[settings.resources]` applies typed limits to the primary Codex workload container. It does not constrain the egress sidecar or host bridge processes. Every field is optional; when the table is absent, Docker or Podman retains its normal defaults. Resource fields follow normal per-field configuration precedence and may also be supplied by an environment manifest's `[settings.resources]` table.
 
 ```toml

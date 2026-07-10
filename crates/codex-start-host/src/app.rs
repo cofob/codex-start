@@ -2,11 +2,13 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::OsString,
-    fs,
+    ffi::{OsStr, OsString},
+    fs::{self, OpenOptions},
     io::IsTerminal,
     path::{Path, PathBuf},
+    process::{Command as ProcessCommand, Stdio},
     str::FromStr,
+    time::Duration,
 };
 
 use codex_start_core::{
@@ -23,7 +25,7 @@ use crate::{
     cli::{
         Cli, Command, ConfigCommand, DoctorArgs, EnvironmentCommand, HomeCommand, LegacyOptions,
         MergeArgs, MergeRunOptions, NetworkModeArg, OutputFormat, PortProtocol, PortSpec,
-        ResourcesCommand, RunArgs, RunOptions, ShellArgs, WorktreeCommand,
+        ResourcesCommand, RunArgs, RunOptions, SessionCommand, ShellArgs, WorktreeCommand,
     },
     configuration::{
         ConfigContext, host_home_spec, patch_from_merge_options, patch_from_run_options,
@@ -41,7 +43,7 @@ use crate::{
     init_spec::{InitBundle, InitBundleOptions, WorkloadIdentity},
     launch_plan::{
         ForwardingMetadata, ForwardingTransport, HostLaunchPlan, HostServiceMetadata, InitPlan,
-        RunRequestContext,
+        PlannedSessionKind, RunRequestContext, SessionMetadata,
     },
     locking::RunLock,
     networking::{
@@ -49,9 +51,17 @@ use crate::{
     },
     runtime::{MountKind, MountRequest, PublishRequest, RunRequest, Runtime, RuntimeKind},
     secrets::{SecretBundle, SecretSource, SecretSpec},
+    session::{SessionKind, SessionRecord, SessionStatus, SessionStore, current_ssh_socket},
 };
 
 const MANAGED_LABEL: &str = "io.codex-start.managed";
+const SESSION_LABEL: &str = "io.codex-start.session";
+const SESSION_WORKER_ENV: &str = "CODEX_START_SESSION_WORKER";
+const SESSION_NAME_ENV: &str = "CODEX_START_SESSION_NAME";
+const SESSION_AGENT_TARGET_ENV: &str = "CODEX_START_SESSION_AGENT_TARGET";
+const SESSION_INTERACTIVE_ENV: &str = "CODEX_START_SESSION_INTERACTIVE";
+const APP_SERVER_SOCKET: &str = "/tmp/codex-start-app-server.sock";
+const APP_SERVER_ENDPOINT: &str = "unix:///tmp/codex-start-app-server.sock";
 
 /// Resolve configuration and execute one CLI operation.
 pub async fn run(cli: Cli) -> Result<u8> {
@@ -77,6 +87,7 @@ pub async fn run(cli: Cli) -> Result<u8> {
         }
         Some(Command::Env(args)) => execute_environment(&context, args.command, output),
         Some(Command::Home(args)) => execute_home(&context, args.command, output).await,
+        Some(Command::Session(args)) => execute_session(&context, args.command, output).await,
         Some(Command::Config(args)) => execute_config(&context, args.command, output),
         Some(Command::Doctor(args)) => execute_doctor(&context, args, output),
         Some(Command::External(values)) => {
@@ -239,6 +250,8 @@ fn legacy_run_options(options: &LegacyOptions) -> RunOptions {
         publish: options.publish.clone(),
         no_tty: false,
         dry_run: false,
+        persistent: false,
+        ephemeral: false,
         runtime: None,
         runtime_program: None,
         home: None,
@@ -286,9 +299,15 @@ fn merge_legacy_run_options(options: &mut RunOptions, legacy: &LegacyOptions) ->
 
 async fn execute_shell(
     context: &ConfigContext,
-    args: ShellArgs,
+    mut args: ShellArgs,
     output: OutputFormat,
 ) -> Result<u8> {
+    if args.options.persistent {
+        return Err(HostError::Usage(
+            "persistent session management applies to `run`, not `shell`".to_owned(),
+        ));
+    }
+    args.options.ephemeral = true;
     let shell = if args.shell_args.is_empty() {
         vec![OsString::from("bash"), OsString::from("-l")]
     } else {
@@ -305,6 +324,21 @@ async fn execute_shell(
         output,
     )
     .await
+}
+
+async fn execute_session(
+    context: &ConfigContext,
+    command: SessionCommand,
+    output: OutputFormat,
+) -> Result<u8> {
+    match command {
+        SessionCommand::Start(mut args) => {
+            args.options.persistent = true;
+            args.options.ephemeral = false;
+            execute_run(context, args, RunKind::Codex, output).await
+        }
+        command => crate::session::execute(context, command, output),
+    }
 }
 
 const MERGE_BUNDLE_CONTAINER: &str = "/run/codex-start/merge-agent";
@@ -624,6 +658,8 @@ fn merge_run_args(environment: Option<String>, options: MergeRunOptions) -> RunA
             pull: options.pull,
             no_tty: options.no_tty,
             dry_run: options.dry_run,
+            persistent: false,
+            ephemeral: true,
             allow_hosts: options.allow_hosts,
             runtime_args: options.runtime_args,
         },
@@ -734,12 +770,301 @@ fn merge_recovery_summary(root: &Path, task: &AgentMergeTask) -> Result<String> 
 
 async fn execute_run(
     context: &ConfigContext,
-    args: RunArgs,
+    mut args: RunArgs,
     kind: RunKind,
     output: OutputFormat,
 ) -> Result<u8> {
-    let launch = resolve_run(context, &args, kind)?;
-    execute_resolved_run(context, &args, kind, launch, output).await
+    if let Some(session_id) = std::env::var_os(SESSION_WORKER_ENV) {
+        let session_id = session_id
+            .to_str()
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .ok_or_else(|| HostError::Config("invalid internal session worker id".to_owned()))?;
+        if let Some(name) = std::env::var_os(SESSION_NAME_ENV) {
+            args.options.name = Some(name.to_string_lossy().into_owned());
+        }
+        args.options.persistent = false;
+        args.options.ephemeral = true;
+        let store = SessionStore::for_context(context)?;
+        let session = store.read(session_id)?;
+        if session.kind == SessionKind::Interactive {
+            args.codex_args = vec![
+                "app-server".into(),
+                "--listen".into(),
+                APP_SERVER_ENDPOINT.into(),
+            ];
+        }
+        let launch = match resolve_run(context, &args, kind) {
+            Ok(launch) => launch,
+            Err(error) => {
+                store.update(session_id, |record| record.status = SessionStatus::Failed)?;
+                return Err(error);
+            }
+        };
+        store.update(session_id, |record| record.status = SessionStatus::Running)?;
+        let result = Box::pin(execute_resolved_run(context, &args, kind, launch, output)).await;
+        match &result {
+            Ok(status) => {
+                store.update(session_id, |record| {
+                    record.exit_code = Some(*status);
+                    if record.status != SessionStatus::Stopped {
+                        record.status = if *status == 0 {
+                            SessionStatus::Completed
+                        } else {
+                            SessionStatus::Failed
+                        };
+                    }
+                })?;
+            }
+            Err(_) => {
+                store.update(session_id, |record| {
+                    if record.status != SessionStatus::Stopped {
+                        record.status = SessionStatus::Failed;
+                    }
+                })?;
+            }
+        }
+        return result;
+    }
+    let mut launch = resolve_run(context, &args, kind)?;
+    if args.options.dry_run
+        && session_plan_kind(&launch.config, kind, &args.codex_args)
+            == Some(PlannedSessionKind::Interactive)
+    {
+        launch.raw_command.extend([
+            OsString::from("app-server"),
+            OsString::from("--listen"),
+            OsString::from(APP_SERVER_ENDPOINT),
+        ]);
+    }
+    if kind == RunKind::Codex && launch.config.sessions.enabled && !args.options.dry_run {
+        return start_persistent_run(context, &args, &launch, output);
+    }
+    Box::pin(execute_resolved_run(context, &args, kind, launch, output)).await
+}
+
+#[allow(clippy::too_many_lines)]
+fn start_persistent_run(
+    context: &ConfigContext,
+    args: &RunArgs,
+    launch: &ResolvedRun,
+    output: OutputFormat,
+) -> Result<u8> {
+    let runtime = Runtime::detect(
+        host_runtime(launch.config.runtime),
+        args.options.runtime_program.as_deref().map(Path::as_os_str),
+    )?;
+    let project_name = context
+        .repo
+        .as_ref()
+        .map_or("directory", |repo| repo.project_name.as_str());
+    let session_kind = if args.codex_args.is_empty() {
+        SessionKind::Interactive
+    } else {
+        SessionKind::Job
+    };
+    let runtime_program = absolute_runtime_program(runtime.program());
+    let initial_alias = launch
+        .config
+        .name
+        .clone()
+        .unwrap_or_else(|| "session".to_owned());
+    let mut record = SessionRecord::new(
+        initial_alias,
+        launch.project_id.clone(),
+        launch.environment.name.clone(),
+        launch.config.home_name.clone(),
+        session_kind,
+        runtime.kind(),
+        UnixArgument::from(runtime_program),
+        String::new(),
+        UnixArgument::from(context.cwd.as_os_str()),
+        UnixArgument::from(context.cwd.as_os_str()),
+    );
+    if launch.config.name.is_none() {
+        record.alias = format!("session-{}", &record.id.simple().to_string()[..8]);
+    }
+    record.container_name = container_name(
+        &launch.environment.name,
+        project_name,
+        &launch.project_id,
+        &record.alias,
+    );
+    let relative_cwd = context
+        .cwd
+        .strip_prefix(context.project_root())
+        .unwrap_or(Path::new(""));
+    let container_workspace = launch
+        .environment
+        .workdir
+        .join(&launch.project_id)
+        .join(&record.alias);
+    let container_workdir = launch
+        .config
+        .workdir
+        .clone()
+        .unwrap_or_else(|| container_workspace.join(relative_cwd));
+    record.container_workdir = UnixArgument::from(container_workdir.as_os_str());
+    if session_kind == SessionKind::Interactive {
+        let new_client = workload_command(
+            &launch.config,
+            RunKind::Codex,
+            &["--remote".into(), APP_SERVER_ENDPOINT.into()],
+            &launch.oauth_callback,
+        )
+        .into_iter()
+        .map(UnixArgument::from)
+        .collect();
+        let resume_client = workload_command(
+            &launch.config,
+            RunKind::Codex,
+            &[
+                "resume".into(),
+                "--last".into(),
+                "--remote".into(),
+                APP_SERVER_ENDPOINT.into(),
+            ],
+            &launch.oauth_callback,
+        )
+        .into_iter()
+        .map(UnixArgument::from)
+        .collect();
+        record.configure_interactive_client(
+            new_client,
+            resume_client,
+            launch.config.sessions.on_tui_exit,
+        );
+    }
+    let store = SessionStore::for_context(context)?;
+    store.create(&record)?;
+    record = store.set_ssh_target(record.id, current_ssh_socket().as_deref())?;
+    let log_path = store.log_path(record.id);
+    let stdout = OpenOptions::new()
+        .append(true)
+        .open(&log_path)
+        .map_err(|source| HostError::io(&log_path, source))?;
+    let stderr = stdout
+        .try_clone()
+        .map_err(|source| HostError::io(&log_path, source))?;
+    let executable =
+        std::env::current_exe().map_err(|source| HostError::io("current executable", source))?;
+    let mut worker = ProcessCommand::new(executable);
+    worker
+        .args(std::env::args_os().skip(1))
+        .current_dir(&context.cwd)
+        .env(SESSION_WORKER_ENV, record.id.to_string())
+        .env(SESSION_NAME_ENV, &record.alias)
+        .env(SESSION_AGENT_TARGET_ENV, store.ssh_target_path(record.id))
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    if session_kind == SessionKind::Interactive {
+        worker.env(SESSION_INTERACTIVE_ENV, "1");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        worker.process_group(0);
+    }
+    let child = match worker.spawn() {
+        Ok(child) => child,
+        Err(source) => {
+            store.update(record.id, |current| current.status = SessionStatus::Failed)?;
+            return Err(HostError::CommandIo {
+                program: "codex-start session worker".into(),
+                source,
+            });
+        }
+    };
+    record = store.update(record.id, |current| {
+        current.supervisor_pid = Some(child.id());
+        current.status = SessionStatus::Detached;
+    })?;
+    emit(
+        output,
+        &record.public_value(),
+        &format!(
+            "started session {} ({})\nlogs: codex-start session logs {} --follow",
+            record.id, record.alias, record.id
+        ),
+    )?;
+    if session_kind == SessionKind::Interactive
+        && output == OutputFormat::Human
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+    {
+        wait_for_session_container(&runtime, &store, &record)?;
+        return crate::session::attach_record(&store, &record);
+    }
+    Ok(0)
+}
+
+fn absolute_runtime_program(program: &OsStr) -> OsString {
+    let requested = Path::new(program);
+    if requested.components().count() > 1 {
+        return fs::canonicalize(requested)
+            .unwrap_or_else(|_| requested.to_path_buf())
+            .into_os_string();
+    }
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|directory| directory.join(requested))
+        .find(|candidate| is_executable_file(candidate))
+        .and_then(|candidate| fs::canonicalize(&candidate).ok().or(Some(candidate)))
+        .map_or_else(|| program.to_owned(), PathBuf::into_os_string)
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        metadata.is_file()
+    }
+}
+
+fn wait_for_session_container(
+    runtime: &Runtime,
+    store: &SessionStore,
+    record: &SessionRecord,
+) -> Result<()> {
+    for _ in 0..100 {
+        if runtime.container_state(&record.container_name)? == Some(true) {
+            let ready = record.kind != SessionKind::Interactive
+                || runtime.exec_probe(
+                    &record.container_name,
+                    &[
+                        OsString::from("test"),
+                        OsString::from("-S"),
+                        APP_SERVER_SOCKET.into(),
+                    ],
+                )?;
+            if ready {
+                return Ok(());
+            }
+        }
+        let current = store.read(record.id)?;
+        if matches!(
+            current.status,
+            SessionStatus::Failed | SessionStatus::Completed
+        ) {
+            return Err(HostError::Runtime(format!(
+                "session {} exited before its container became ready",
+                record.id
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(HostError::Runtime(format!(
+        "session {} did not become ready within 10 seconds",
+        record.id
+    )))
 }
 
 async fn execute_resolved_run(
@@ -762,6 +1087,7 @@ async fn execute_resolved_run(
             logical_command: launch.raw_command,
             runtime_args: &args.options.runtime_args,
             merge: launch.merge.as_ref(),
+            session_kind: session_plan_kind(&launch.config, kind, &args.codex_args),
         })?;
         return emit_preview(output, &plan);
     }
@@ -778,6 +1104,7 @@ async fn execute_resolved_run(
         logical_command: launch.raw_command.clone(),
         runtime_args: &args.options.runtime_args,
         merge: launch.merge.as_ref(),
+        session_kind: session_plan_kind(&launch.config, kind, &args.codex_args),
     })?;
     match prepare_runtime_run(context, args, kind, &launch)? {
         RuntimeRunOutcome::Attached(status) => Ok(status),
@@ -900,6 +1227,7 @@ enum RuntimeRunOutcome {
     Ready(Box<PreparedRuntimeRun>),
 }
 
+#[allow(clippy::too_many_lines)]
 fn prepare_runtime_run(
     context: &ConfigContext,
     args: &RunArgs,
@@ -987,6 +1315,12 @@ fn prepare_runtime_run(
         &launch.project_id,
         &run_id,
     );
+    if let Some(session_id) = std::env::var_os(SESSION_WORKER_ENV) {
+        labels.insert(
+            SESSION_LABEL.to_owned(),
+            session_id.to_string_lossy().into_owned(),
+        );
+    }
     if launch.merge.is_some() {
         labels.insert("io.codex-start.operation".to_owned(), "merge".to_owned());
     }
@@ -1080,6 +1414,7 @@ async fn prepare_host_features(
     launch: &ResolvedRun,
     prepared: &PreparedRuntimeRun,
 ) -> Result<PreparedHostFeatures> {
+    let runtime_parent = runtime_material_root(context)?;
     let home = ResolvedHome::resolve(
         &launch.config.home_name,
         &host_home_spec(&launch.config.home),
@@ -1091,14 +1426,24 @@ async fn prepare_host_features(
         );
     }
     let home_lock = home.lock_shared()?;
-    let forwarding = ForwardingPlan::prepare(
+    let mut forwarding = ForwardingPlan::prepare(
         &prepared.runtime,
         &forwarding_options(&launch.config),
-        &context.paths.runtime_dir(),
+        &runtime_parent,
     )?;
+    if std::env::var_os(SESSION_WORKER_ENV).is_some()
+        && launch.config.network != NetworkMode::Offline
+        && launch.config.forwarding.ssh_agent
+        && forwarding.ssh_agent_relay.is_none()
+    {
+        // The dynamic target file may be populated by a later attachment.
+        // HostServiceManager ignores this placeholder when session indirection
+        // is enabled, but still needs the relay requested in its plan.
+        forwarding.ssh_agent_relay = Some(PathBuf::from("/dev/null"));
+    }
     trace_warnings(&forwarding.warnings);
     let egress_authentication = (launch.config.network == NetworkMode::Allowlist)
-        .then(|| EgressAuthentication::create(&context.paths.runtime_dir()))
+        .then(|| EgressAuthentication::create(&runtime_parent))
         .transpose()?;
     let mut settings = HostServiceSettings::from_forwarding(&launch.config.forwarding);
     settings.set_oauth_callback(&launch.oauth_callback);
@@ -1108,7 +1453,7 @@ async fn prepare_host_features(
         .map(|_| EgressAuthentication::container_token_file());
     let services = HostServiceManager::start(HostServiceOptions {
         runtime: &prepared.runtime,
-        runtime_parent: &context.paths.runtime_dir(),
+        runtime_parent: &runtime_parent,
         network: launch.config.network,
         forwarding_config: &launch.config.forwarding,
         forwarding: &forwarding,
@@ -1144,7 +1489,7 @@ async fn prepare_host_features(
     let secrets = prepare_secrets(
         &launch.config,
         &launch.environment.secret_refs,
-        &context.paths.runtime_dir(),
+        &runtime_parent,
     )?;
     Ok(PreparedHostFeatures {
         home,
@@ -1163,7 +1508,11 @@ async fn prepare_host_features(
 fn forwarding_options(config: &EffectiveConfig) -> ForwardingOptions {
     ForwardingOptions {
         ssh_agent: config.network != NetworkMode::Offline && config.forwarding.ssh_agent,
-        ssh_agent_bridge: config.forwarding.ssh_agent_bridge,
+        ssh_agent_bridge: if std::env::var_os(SESSION_WORKER_ENV).is_some() {
+            codex_start_core::SshAgentBridge::Tcp
+        } else {
+            config.forwarding.ssh_agent_bridge
+        },
         gpg_agent: config.network != NetworkMode::Offline && config.forwarding.gpg_agent,
         git_config: config.forwarding.git_config,
         known_hosts: config.forwarding.known_hosts,
@@ -1173,6 +1522,21 @@ fn forwarding_options(config: &EffectiveConfig) -> ForwardingOptions {
         container_ssh_dir: config.forwarding.container_ssh_dir.clone(),
         ssh_user: config.forwarding.ssh_user.clone(),
     }
+}
+
+fn runtime_material_root(context: &ConfigContext) -> Result<PathBuf> {
+    let Some(session_id) = std::env::var_os(SESSION_WORKER_ENV) else {
+        return Ok(context.paths.runtime_dir());
+    };
+    let id = session_id
+        .to_str()
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| HostError::Config("invalid internal session worker id".to_owned()))?;
+    Ok(context
+        .paths
+        .sessions_dir()
+        .join(id.simple().to_string())
+        .join("runtime"))
 }
 
 fn trace_warnings(warnings: &[String]) {
@@ -1240,7 +1604,7 @@ fn prepare_container_files(
         init_services.push(service);
     }
     let init = InitBundle::create(
-        &context.paths.runtime_dir(),
+        &runtime_material_root(context)?,
         InitBundleOptions {
             identity: prepared.workload_identity,
             account: Some(
@@ -1263,7 +1627,12 @@ fn prepare_container_files(
         },
     )?;
     replace_mount_targets(&mut mounts, [init.mount()])?;
-    let run_volumes = ensure_cache_volumes(&prepared.runtime, &mounts, &prepared.run_id)?;
+    let run_volumes = ensure_cache_volumes(
+        &prepared.runtime,
+        &mounts,
+        &prepared.run_id,
+        &prepared.labels,
+    )?;
     let mut env = prepared.resources.env.clone();
     env.extend(host.forwarding.env.clone());
     env.extend(host.service_plan.env.clone());
@@ -1345,6 +1714,18 @@ fn build_execution_artifacts(
     let init_services = files.init_services.clone();
     let mut add_hosts = prepared.runtime.host_gateway_mapping();
     add_hosts.extend(host.service_plan.add_hosts.clone());
+    let persistent_interactive = std::env::var_os(SESSION_INTERACTIVE_ENV).is_some();
+    let mut extra_args = args.options.runtime_args.clone();
+    if persistent_interactive {
+        if extra_args.iter().any(|argument| {
+            argument == "--restart" || argument.to_string_lossy().starts_with("--restart=")
+        }) {
+            return Err(HostError::Config(
+                "persistent interactive sessions reserve the runtime --restart option".to_owned(),
+            ));
+        }
+        extra_args.push("--restart=unless-stopped".into());
+    }
     let mut request = RunRequest {
         name: prepared.run_name.clone(),
         image: prepared.image.clone(),
@@ -1364,8 +1745,8 @@ fn build_execution_artifacts(
         add_hosts,
         tty: tty_enabled(launch.config.tty),
         interactive: true,
-        remove: true,
-        extra_args: args.options.runtime_args.clone(),
+        remove: !persistent_interactive,
+        extra_args,
         ..RunRequest::default()
     };
     let identity_mode = prepared.runtime.configure_workload_identity(
@@ -1467,7 +1848,44 @@ async fn execute_prepared_run(
     );
     host.services.check_health().await?;
     host.services.release_port_reservations();
-    let run_result = run_with_signal_cleanup(&prepared.runtime, artifacts.request).await;
+    let persistent_interactive = std::env::var_os(SESSION_INTERACTIVE_ENV).is_some();
+    let ExecutionArtifacts {
+        request,
+        _init: init_bundle,
+    } = artifacts;
+    let run_result = if persistent_interactive {
+        run_without_signal_cleanup(&prepared.runtime, request).await
+    } else {
+        run_with_signal_cleanup(&prepared.runtime, request).await
+    };
+    if persistent_interactive {
+        let run_result = match run_result {
+            Ok(status) => {
+                supervise_persistent_interactive(
+                    context,
+                    &prepared.runtime,
+                    &prepared.run_name,
+                    status,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        // Container restart needs the exact init specs, authentication material,
+        // secret files, and networks created for the original launch. They live
+        // below the private session directory and are removed by `session remove`.
+        std::mem::forget(init_bundle);
+        std::mem::forget(host);
+        std::mem::forget(network);
+        std::mem::forget(run_volume_guard);
+        let status = run_result?;
+        tracing::info!(
+            container = prepared.run_name,
+            exit_code = status,
+            "persistent Codex environment detached from its supervisor"
+        );
+        return Ok(status);
+    }
     let host_cleanup = host.services.shutdown().await;
     let network_cleanup = network.cleanup();
     run_volume_guard.cleanup();
@@ -1484,6 +1902,46 @@ async fn execute_prepared_run(
         "Codex environment exited"
     );
     Ok(status)
+}
+
+async fn supervise_persistent_interactive(
+    context: &ConfigContext,
+    runtime: &Runtime,
+    container_name: &str,
+    initial_status: u8,
+) -> Result<u8> {
+    let id = std::env::var_os(SESSION_WORKER_ENV)
+        .and_then(|value| value.to_str().and_then(|value| Uuid::parse_str(value).ok()))
+        .ok_or_else(|| HostError::Config("invalid internal session worker id".to_owned()))?;
+    let store = SessionStore::for_context(context)?;
+    let mut stopped_observations = 0_u8;
+    loop {
+        if !store.contains(id)? {
+            return Ok(initial_status);
+        }
+        let record = store.read(id)?;
+        if record.status == SessionStatus::Stopped {
+            stopped_observations = 0;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        }
+        match runtime.container_state(container_name) {
+            Ok(Some(true)) => stopped_observations = 0,
+            Ok(Some(false) | None) => {
+                stopped_observations = stopped_observations.saturating_add(1);
+                if stopped_observations >= 10 {
+                    return Ok(runtime
+                        .container_exit_code(container_name)?
+                        .unwrap_or(initial_status));
+                }
+            }
+            Err(error) => {
+                stopped_observations = 0;
+                tracing::warn!(session = %id, %error, "waiting for the session runtime");
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 struct RunVolumeGuard {
@@ -1530,6 +1988,7 @@ struct PreviewPlanOptions<'a> {
     logical_command: Vec<OsString>,
     runtime_args: &'a [OsString],
     merge: Option<&'a MergeLaunch>,
+    session_kind: Option<PlannedSessionKind>,
 }
 
 struct PreviewTopology {
@@ -1556,7 +2015,7 @@ struct PreviewHostPolicy {
 fn preview_launch_plan(options: PreviewPlanOptions<'_>) -> Result<HostLaunchPlan> {
     let topology = preview_topology(&options)?;
     let mounts = preview_mounts(&options, &topology)?;
-    let request = preview_run_request(&options, &topology, mounts);
+    let request = preview_run_request(&options, &topology, mounts)?;
     finalize_preview_plan(options, topology, request)
 }
 
@@ -1820,7 +2279,7 @@ fn preview_run_request(
     options: &PreviewPlanOptions<'_>,
     topology: &PreviewTopology,
     mounts: Vec<MountRequest>,
-) -> RunRequest {
+) -> Result<RunRequest> {
     let config = options.config;
     let mut env_map = topology.resources.env.clone();
     env_map.extend(base_workload_environment(
@@ -1851,7 +2310,19 @@ fn preview_run_request(
     ) {
         add_hosts.insert("host.docker.internal".to_owned(), "host-gateway".to_owned());
     }
-    RunRequest {
+    let persistent_interactive = options.session_kind == Some(PlannedSessionKind::Interactive);
+    let mut extra_args = options.runtime_args.to_vec();
+    if persistent_interactive {
+        if extra_args.iter().any(|argument| {
+            argument == "--restart" || argument.to_string_lossy().starts_with("--restart=")
+        }) {
+            return Err(HostError::Config(
+                "persistent interactive sessions reserve the runtime --restart option".to_owned(),
+            ));
+        }
+        extra_args.push("--restart=unless-stopped".into());
+    }
+    Ok(RunRequest {
         name: topology.run_name.clone(),
         image: options.image.clone(),
         entrypoint: Some("/usr/local/bin/codex-start-init".to_owned()),
@@ -1876,10 +2347,10 @@ fn preview_run_request(
         add_hosts,
         tty: tty_enabled(config.tty),
         interactive: true,
-        remove: true,
-        extra_args: options.runtime_args.to_vec(),
+        remove: !persistent_interactive,
+        extra_args,
         ..RunRequest::default()
-    }
+    })
 }
 
 fn finalize_preview_plan(
@@ -1916,6 +2387,15 @@ fn finalize_preview_plan(
             .collect(),
     };
     plan.forwarding = preview_forwarding_metadata(options.config);
+    if options.session_kind.is_some()
+        && options.config.network != NetworkMode::Offline
+        && options.config.forwarding.ssh_agent
+    {
+        plan.forwarding.ssh_agent = ForwardingTransport::AuthenticatedRelay;
+        plan.forwarding.warnings.push(
+            "session SSH-agent targets are resolved and refreshed at attachment time".to_owned(),
+        );
+    }
     plan.host_services = HostServiceMetadata {
         declarations: options.environment.host_services.clone(),
         allow_hosts: topology.host_allow_hosts,
@@ -1926,9 +2406,37 @@ fn finalize_preview_plan(
                 .to_owned(),
         ],
     };
+    plan.session = SessionMetadata {
+        enabled: options.session_kind.is_some(),
+        kind: options.session_kind,
+        reboot_replay: options.session_kind == Some(PlannedSessionKind::Interactive),
+        refresh_ssh_on_attach: options.config.sessions.refresh_ssh_on_attach,
+        warnings: options.session_kind.map_or_else(Vec::new, |kind| {
+            vec![match kind {
+                PlannedSessionKind::Interactive => {
+                    "the app-server container may restart after reboot; restoring host-side bridge listeners after a full host reboot remains a follow-up".to_owned()
+                }
+                PlannedSessionKind::Job => {
+                    "non-interactive jobs survive terminal loss but are never replayed after reboot".to_owned()
+                }
+            }]
+        }),
+    };
     plan.validate()
         .map_err(|error| HostError::Config(error.to_string()))?;
     Ok(plan)
+}
+
+fn session_plan_kind(
+    config: &EffectiveConfig,
+    kind: RunKind,
+    raw_args: &[OsString],
+) -> Option<PlannedSessionKind> {
+    (kind == RunKind::Codex && config.sessions.enabled).then_some(if raw_args.is_empty() {
+        PlannedSessionKind::Interactive
+    } else {
+        PlannedSessionKind::Job
+    })
 }
 
 fn preview_network_plan(
@@ -2191,6 +2699,18 @@ fn execute_worktree(
             editor::open(&source, &resolved.config.git.editor)
         }
         WorktreeCommand::Cleanup { force } => {
+            let active = SessionStore::for_context(context)?
+                .list()?
+                .into_iter()
+                .filter(|session| session.project_id == repo.project_id && session.status.is_live())
+                .map(|session| session.id.to_string())
+                .collect::<Vec<_>>();
+            if !active.is_empty() {
+                return Err(HostError::Runtime(format!(
+                    "active sessions protect their worktrees from cleanup: {}; stop or remove them first",
+                    active.join(", ")
+                )));
+            }
             let (worktrees, branches) =
                 repo.cleanup_owned(&base, &resolved.config.git.branch_prefix, force)?;
             emit(
@@ -2259,49 +2779,61 @@ fn execute_resources(
             )?;
             Ok(0)
         }
-        ResourcesCommand::Cleanup { force } => {
-            let containers = runtime.list_containers(&format!("{MANAGED_LABEL}=true"), true)?;
-            let mut removed_containers = 0;
-            let mut running_skipped = 0;
-            for name in container_names(&containers.stdout_text()) {
-                let running = runtime.container_state(&name)? == Some(true);
-                if running && !force {
-                    running_skipped += 1;
-                } else if runtime.remove_container(&name, force).is_ok() {
-                    removed_containers += 1;
-                }
-            }
-            let mut removed_networks = 0;
-            for name in runtime.list_network_names(&format!("{MANAGED_LABEL}=true"))? {
-                if runtime.remove_network(&name).is_ok() {
-                    removed_networks += 1;
-                }
-            }
-            let mut removed_volumes = 0;
-            let mut unowned_volumes_skipped = 0;
-            for name in runtime.list_volume_names("io.codex-start.ephemeral=true")? {
-                if runtime.volume_label(&name, MANAGED_LABEL)?.as_deref() != Some("true") {
-                    unowned_volumes_skipped += 1;
-                } else if runtime.remove_volume(&name, true).is_ok() {
-                    removed_volumes += 1;
-                }
-            }
-            emit(
-                output,
-                &serde_json::json!({
-                    "containers_removed": removed_containers,
-                    "running_skipped": running_skipped,
-                    "networks_removed": removed_networks,
-                    "volumes_removed": removed_volumes,
-                    "unowned_volumes_skipped": unowned_volumes_skipped
-                }),
-                &format!(
-                    "removed {removed_containers} containers, {removed_networks} networks, and {removed_volumes} ephemeral volumes; skipped {running_skipped} running containers and {unowned_volumes_skipped} unowned volumes"
-                ),
-            )?;
-            Ok(0)
+        ResourcesCommand::Cleanup { force } => cleanup_resources(&runtime, force, output),
+    }
+}
+
+fn cleanup_resources(runtime: &Runtime, force: bool, output: OutputFormat) -> Result<u8> {
+    let containers = runtime.list_containers(&format!("{MANAGED_LABEL}=true"), true)?;
+    let mut removed_containers = 0;
+    let mut running_skipped = 0;
+    let mut sessions_skipped = 0;
+    for name in container_names(&containers.stdout_text()) {
+        if runtime.container_label(&name, SESSION_LABEL)?.is_some() {
+            sessions_skipped += 1;
+            continue;
+        }
+        let running = runtime.container_state(&name)? == Some(true);
+        if running && !force {
+            running_skipped += 1;
+        } else if runtime.remove_container(&name, force).is_ok() {
+            removed_containers += 1;
         }
     }
+    let mut removed_networks = 0;
+    for name in runtime.list_network_names(&format!("{MANAGED_LABEL}=true"))? {
+        if runtime.network_label(&name, SESSION_LABEL)?.is_some() {
+            sessions_skipped += 1;
+            continue;
+        }
+        if runtime.remove_network(&name).is_ok() {
+            removed_networks += 1;
+        }
+    }
+    let mut removed_volumes = 0;
+    let mut unowned_volumes_skipped = 0;
+    for name in runtime.list_volume_names("io.codex-start.ephemeral=true")? {
+        if runtime.volume_label(&name, MANAGED_LABEL)?.as_deref() != Some("true") {
+            unowned_volumes_skipped += 1;
+        } else if runtime.remove_volume(&name, true).is_ok() {
+            removed_volumes += 1;
+        }
+    }
+    emit(
+        output,
+        &serde_json::json!({
+            "containers_removed": removed_containers,
+            "running_skipped": running_skipped,
+            "session_resources_skipped": sessions_skipped,
+            "networks_removed": removed_networks,
+            "volumes_removed": removed_volumes,
+            "unowned_volumes_skipped": unowned_volumes_skipped
+        }),
+        &format!(
+            "removed {removed_containers} containers, {removed_networks} networks, and {removed_volumes} ephemeral volumes; skipped {running_skipped} running containers, {sessions_skipped} session resources, and {unowned_volumes_skipped} unowned volumes"
+        ),
+    )?;
+    Ok(0)
 }
 
 fn execute_environment(
@@ -2448,6 +2980,7 @@ async fn execute_home(
                 home: Some(name),
                 no_worktree: true,
                 network: Some(NetworkModeArg::Allowlist),
+                ephemeral: true,
                 ..RunOptions::default()
             };
             execute_run(
@@ -2613,6 +3146,18 @@ fn execute_doctor(context: &ConfigContext, args: DoctorArgs, output: OutputForma
         detail: format!("{} definitions", catalog.names().count()),
     });
     checks.push(home_doctor_check(&resolved.config));
+    if resolved.config.sessions.enabled {
+        let (enabled, service) = crate::session::recovery_installation(context)?;
+        checks.push(DoctorCheck {
+            name: "session-recovery".to_owned(),
+            status: if enabled { "ok" } else { "warning" },
+            detail: if enabled {
+                format!("installed at {}", service.display())
+            } else {
+                "not enabled; terminal-loss recovery works, but cross-reboot reconciliation requires `codex-start session recovery enable`".to_owned()
+            },
+        });
+    }
     if let Some(repo) = &context.repo {
         checks.push(DoctorCheck {
             name: "git".to_owned(),
@@ -2975,6 +3520,7 @@ fn ensure_cache_volumes(
     runtime: &Runtime,
     mounts: &[MountRequest],
     run_id: &str,
+    workload_labels: &BTreeMap<String, String>,
 ) -> Result<Vec<String>> {
     let mut ephemeral = Vec::<String>::new();
     for mount in mounts {
@@ -2992,6 +3538,9 @@ fn ensure_cache_volumes(
         ]);
         if name.contains(run_id) {
             volume_labels.insert("io.codex-start.ephemeral".to_owned(), "true".to_owned());
+            if let Some(session_id) = workload_labels.get(SESSION_LABEL) {
+                volume_labels.insert(SESSION_LABEL.to_owned(), session_id.clone());
+            }
         }
         if let Err(error) = runtime.ensure_volume(name, &volume_labels) {
             for created in &ephemeral {
@@ -3361,6 +3910,11 @@ async fn run_with_signal_cleanup(runtime: &Runtime, request: RunRequest) -> Resu
     }
 }
 
+async fn run_without_signal_cleanup(runtime: &Runtime, request: RunRequest) -> Result<u8> {
+    let child_runtime = runtime.clone();
+    join_runtime_task(tokio::task::spawn_blocking(move || child_runtime.run(&request)).await)
+}
+
 fn join_runtime_task(
     result: std::result::Result<Result<u8>, tokio::task::JoinError>,
 ) -> Result<u8> {
@@ -3712,6 +4266,7 @@ mod tests {
             merge: MergeConfig::default(),
             proxy: ProxyConfig::default(),
             resources: codex_start_core::ResourceLimits::default(),
+            sessions: codex_start_core::SessionConfig::default(),
             codex: CodexConfig {
                 profile: None,
                 args: Vec::new(),

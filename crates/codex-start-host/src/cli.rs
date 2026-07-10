@@ -59,6 +59,8 @@ pub enum Command {
     Env(EnvironmentArgs),
     /// Manage shared Codex homes.
     Home(HomeArgs),
+    /// Manage persistent background and resumable sessions.
+    Session(SessionArgs),
     /// Open the interactive editor or inspect and edit configuration directly.
     Config(ConfigArgs),
     /// Diagnose host, runtime, image, and Codex compatibility.
@@ -138,6 +140,14 @@ pub struct RunOptions {
     /// Print the redacted execution plan without changing runtime state.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Force persistent session management for this run.
+    #[arg(long, conflicts_with = "ephemeral")]
+    pub persistent: bool,
+
+    /// Use the foreground disposable lifecycle for this run.
+    #[arg(long, conflicts_with = "persistent")]
+    pub ephemeral: bool,
 
     /// Additional allowed egress host or host:port pattern.
     #[arg(long = "allow-host")]
@@ -402,6 +412,85 @@ pub enum HomeCommand {
     },
 }
 
+/// Persistent-session command group.
+#[derive(Clone, Debug, Args)]
+pub struct SessionArgs {
+    /// Session operation.
+    #[command(subcommand)]
+    pub command: SessionCommand,
+}
+
+/// Persistent-session lifecycle operations.
+#[derive(Clone, Debug, Subcommand)]
+pub enum SessionCommand {
+    /// Start a managed session using the normal run options.
+    Start(RunArgs),
+    /// List sessions for the current project.
+    List {
+        /// Include sessions belonging to other projects.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Show one session's redacted metadata.
+    Show(SessionSelection),
+    /// Attach to a live session or its persisted Codex thread.
+    Attach {
+        #[command(flatten)]
+        selection: SessionSelection,
+        /// Keep the session's current SSH-agent target.
+        #[arg(long)]
+        no_refresh_ssh: bool,
+    },
+    /// Print or follow one session's logs.
+    Logs {
+        #[command(flatten)]
+        selection: SessionSelection,
+        /// Continue following new output.
+        #[arg(short, long)]
+        follow: bool,
+    },
+    /// Refresh host integrations for a running session.
+    Refresh(SessionSelection),
+    /// Stop a session while preserving its metadata and worktree.
+    Stop(SessionSelection),
+    /// Restart a stopped interactive session.
+    Restart(SessionSelection),
+    /// Remove a stopped session's owned runtime state.
+    Remove {
+        #[command(flatten)]
+        selection: SessionSelection,
+        /// Stop a running session before removal.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Configure cross-reboot recovery.
+    Recovery {
+        #[command(subcommand)]
+        command: SessionRecoveryCommand,
+    },
+}
+
+/// Select one persistent session by UUID or project-local alias.
+#[derive(Clone, Debug, Args)]
+pub struct SessionSelection {
+    /// Session UUID or alias.
+    pub session: String,
+}
+
+/// User-level reboot-recovery service operations.
+#[derive(Clone, Copy, Debug, Subcommand)]
+pub enum SessionRecoveryCommand {
+    /// Install and enable user-level recovery.
+    Enable,
+    /// Disable and remove user-level recovery.
+    Disable,
+    /// Report whether recovery is installed and active.
+    Status,
+    /// Run the long-lived recovery reconciler.
+    #[command(hide = true)]
+    Run,
+}
+
 /// Configuration command group.
 #[derive(Clone, Debug, Args)]
 pub struct ConfigArgs {
@@ -612,7 +701,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, Command, HomeCommand, PortProtocol, PortSpec};
+    use super::{Cli, Command, HomeCommand, PortProtocol, PortSpec, SessionCommand};
 
     #[test]
     fn parses_explicit_passthrough_commands_without_clap_assertions() {
@@ -646,6 +735,50 @@ mod tests {
                 if matches!(&args.command, HomeCommand::Exec { codex_args, .. }
                     if codex_args.as_slice()
                         == [OsString::from("login"), OsString::from("--device-auth")])
+        ));
+    }
+
+    #[test]
+    fn parses_persistent_session_lifecycle_and_ephemeral_override() {
+        let run = Cli::try_parse_from(["codex-start", "run", "rust", "--ephemeral"])
+            .expect("ephemeral run");
+        assert!(matches!(
+            run.command,
+            Some(Command::Run(args)) if args.options.ephemeral
+        ));
+        assert!(
+            Cli::try_parse_from(["codex-start", "run", "rust", "--ephemeral", "--persistent"])
+                .is_err()
+        );
+
+        let attach = Cli::try_parse_from([
+            "codex-start",
+            "session",
+            "attach",
+            "feature",
+            "--no-refresh-ssh",
+        ])
+        .expect("session attach");
+        assert!(matches!(
+            attach.command,
+            Some(Command::Session(args))
+                if matches!(args.command, SessionCommand::Attach { no_refresh_ssh: true, .. })
+        ));
+
+        let start = Cli::try_parse_from([
+            "codex-start",
+            "session",
+            "start",
+            "rust",
+            "--",
+            "exec",
+            "task",
+        ])
+        .expect("session start");
+        assert!(matches!(
+            start.command,
+            Some(Command::Session(args))
+                if matches!(&args.command, SessionCommand::Start(run) if run.codex_args == ["exec", "task"])
         ));
     }
 

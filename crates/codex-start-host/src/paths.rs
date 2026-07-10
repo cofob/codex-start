@@ -53,6 +53,7 @@ impl AppPaths {
             self.projects_dir(),
             self.homes_dir(),
             self.worktrees_dir(),
+            self.sessions_dir(),
             self.runtime_dir(),
         ] {
             create_private_dir(&path)?;
@@ -83,6 +84,11 @@ impl AppPaths {
     /// Linked worktree storage.
     pub fn worktrees_dir(&self) -> PathBuf {
         self.data.join("worktrees")
+    }
+
+    /// Persistent session metadata and private launch bundles.
+    pub fn sessions_dir(&self) -> PathBuf {
+        self.data.join("sessions")
     }
 
     /// Generated secrets, sockets, and lifecycle state.

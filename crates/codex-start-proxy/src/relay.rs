@@ -1,6 +1,7 @@
 //! Authenticated TCP and Unix-socket relays with bounded resource use.
 
 use std::{
+    ffi::OsString,
     future::Future,
     io,
     net::SocketAddr,
@@ -9,6 +10,8 @@ use std::{
     time::Duration,
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use serde::Deserialize;
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -75,6 +78,24 @@ pub enum RelayTarget {
     Tcp(String),
     /// A Unix-domain socket.
     Unix(PathBuf),
+    /// A private JSON file containing the current Unix-domain socket path.
+    ///
+    /// The file is resolved for every new connection so a long-lived relay can
+    /// follow a replaced SSH agent without changing its authenticated endpoint.
+    UnixTargetFile(PathBuf),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EncodedTarget {
+    unix_base64: String,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TargetRepresentation {
+    Utf8(String),
+    UnixBase64(EncodedTarget),
 }
 
 /// Byte counts returned after both relay directions close cleanly.
@@ -170,7 +191,72 @@ async fn handle_authenticated_server(
                 })?;
             relay_bidirectional(&mut inbound, &mut outbound, config.idle_timeout).await
         }
+        RelayTarget::UnixTargetFile(target_file) => {
+            let path = load_unix_target_file(target_file)?;
+            let mut outbound = timeout(config.connect_timeout, UnixStream::connect(&path))
+                .await
+                .map_err(|_| RelayError::ConnectTimeout(path.display().to_string()))?
+                .map_err(|source| RelayError::Connect {
+                    target: path.display().to_string(),
+                    source,
+                })?;
+            relay_bidirectional(&mut inbound, &mut outbound, config.idle_timeout).await
+        }
     }
+}
+
+fn load_unix_target_file(path: &Path) -> Result<PathBuf, RelayError> {
+    const MAX_TARGET_BYTES: u64 = 16 * 1_024;
+    let metadata = std::fs::symlink_metadata(path).map_err(|source| RelayError::TargetFile {
+        path: path.to_owned(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_TARGET_BYTES
+    {
+        return Err(RelayError::InvalidTargetFile(path.to_owned()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(RelayError::InvalidTargetFile(path.to_owned()));
+        }
+    }
+    let bytes = std::fs::read(path).map_err(|source| RelayError::TargetFile {
+        path: path.to_owned(),
+        source,
+    })?;
+    let target: TargetRepresentation = serde_json::from_slice(&bytes)
+        .map_err(|_| RelayError::InvalidTargetFile(path.to_owned()))?;
+    let target = match target {
+        TargetRepresentation::Utf8(value) => OsString::from(value),
+        TargetRepresentation::UnixBase64(encoded) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStringExt;
+                OsString::from_vec(
+                    BASE64
+                        .decode(encoded.unix_base64)
+                        .map_err(|_| RelayError::InvalidTargetFile(path.to_owned()))?,
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                return Err(RelayError::InvalidTargetFile(path.to_owned()));
+            }
+        }
+    };
+    #[cfg(unix)]
+    let invalid = {
+        use std::os::unix::ffi::OsStrExt;
+        target.as_bytes().is_empty() || target.as_bytes().contains(&0)
+    };
+    #[cfg(not(unix))]
+    let invalid = target.is_empty();
+    if invalid {
+        return Err(RelayError::InvalidTargetFile(path.to_owned()));
+    }
+    Ok(PathBuf::from(target))
 }
 
 /// Runs a local TCP bridge whose outbound side uses the authenticated protocol.
@@ -662,6 +748,14 @@ pub enum RelayError {
     },
     #[error("refusing to replace non-socket path {0}")]
     RefuseReplace(PathBuf),
+    #[error("invalid dynamic Unix relay target file {0}")]
+    InvalidTargetFile(PathBuf),
+    #[error("failed to read dynamic Unix relay target file {path}: {source}")]
+    TargetFile {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 /// Parses and validates a literal socket address for listener arguments.
@@ -778,6 +872,37 @@ mod tests {
         assert!(matches!(
             bind_unix_listener(&path),
             Err(RelayError::RefuseReplace(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dynamic_unix_target_file_is_private_and_reloadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target_file = directory.path().join("target.json");
+        let first = directory.path().join("first.sock");
+        std::fs::write(
+            &target_file,
+            serde_json::to_vec(first.to_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        std::fs::set_permissions(&target_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(load_unix_target_file(&target_file).unwrap(), first);
+
+        let second = directory.path().join("second.sock");
+        std::fs::write(
+            &target_file,
+            serde_json::to_vec(second.to_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(load_unix_target_file(&target_file).unwrap(), second);
+
+        std::fs::set_permissions(&target_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(
+            load_unix_target_file(&target_file),
+            Err(RelayError::InvalidTargetFile(_))
         ));
     }
 }

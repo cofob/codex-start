@@ -21,6 +21,7 @@ mod networking;
 mod paths;
 mod runtime;
 mod secrets;
+mod session;
 
 use std::process::ExitCode;
 

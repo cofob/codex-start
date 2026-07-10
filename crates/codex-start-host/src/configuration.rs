@@ -10,7 +10,7 @@ use std::{
 
 use codex_start_core::{
     ConfigDocument, ConfigLayer, ConfigLayerKind, ConfigPatch, ConfigResolver, HomeConfig,
-    MergePatch, NetworkMode, ResolvedConfig, RuntimeKind as CoreRuntimeKind, TtyMode,
+    MergePatch, NetworkMode, ResolvedConfig, RuntimeKind as CoreRuntimeKind, SessionPatch, TtyMode,
     WorktreeMode as CoreWorktreeMode,
 };
 use toml_edit::{DocumentMut, Item, Table, value};
@@ -583,6 +583,19 @@ pub fn patch_from_run_options(environment: Option<&str>, options: &RunOptions) -
             .then(|| options.publish.iter().map(render_port).collect()),
         rebuild: options.rebuild.then_some(true),
         tty: options.no_tty.then_some(TtyMode::Never),
+        sessions: if options.persistent {
+            Some(SessionPatch {
+                enabled: Some(true),
+                ..SessionPatch::default()
+            })
+        } else if options.ephemeral {
+            Some(SessionPatch {
+                enabled: Some(false),
+                ..SessionPatch::default()
+            })
+        } else {
+            None
+        },
         allow_hosts: (!options.allow_hosts.is_empty()).then(|| options.allow_hosts.clone()),
         ..ConfigPatch::default()
     }
@@ -609,6 +622,8 @@ pub fn patch_from_merge_options(
         pull: options.pull,
         no_tty: options.no_tty,
         dry_run: options.dry_run,
+        persistent: false,
+        ephemeral: true,
         allow_hosts: options.allow_hosts.clone(),
         runtime_args: options.runtime_args.clone(),
     };

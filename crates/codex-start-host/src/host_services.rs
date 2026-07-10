@@ -57,6 +57,7 @@ const INIT_PROGRAM: &str = "/usr/local/bin/codex-start-init";
 const DEFAULT_SSH_RULES: &[&str] = &["github.com:22", "ssh.github.com:443"];
 const DEFAULT_BROWSER_RULES: &[&str] =
     &["auth.openai.com:443", "chatgpt.com:443", "*.openai.com:443"];
+const SESSION_AGENT_TARGET_ENV: &str = "CODEX_START_SESSION_AGENT_TARGET";
 
 /// A host browser opener invoked without a shell.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -692,7 +693,14 @@ impl HostServiceManager {
             self.plan.ownership_paths.push(path);
         }
 
-        let target = RelayTarget::Unix(socket.to_owned());
+        let target = if label == "SSH agent" {
+            std::env::var_os(SESSION_AGENT_TARGET_ENV).map_or_else(
+                || RelayTarget::Unix(socket.to_owned()),
+                |path| RelayTarget::UnixTargetFile(PathBuf::from(path)),
+            )
+        } else {
+            RelayTarget::Unix(socket.to_owned())
+        };
         let mut shutdown = self.shutdown.subscribe();
         let config = limits;
         let task_label = label.to_owned();
