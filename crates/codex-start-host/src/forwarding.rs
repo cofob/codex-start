@@ -110,21 +110,21 @@ impl ForwardingPlan {
         } else {
             None
         };
-        if options.git_config {
-            if let Some(source) = configured_host_path(
+        if options.git_config
+            && let Some(source) = configured_host_path(
                 options.git_config_file.as_deref(),
                 home.as_deref(),
                 ".gitconfig",
-            )? {
-                prepare_git_config(
-                    home.as_deref(),
-                    &source,
-                    temporary.path(),
-                    &mut mounts,
-                    &mut env_map,
-                    &mut warnings,
-                )?;
-            }
+            )?
+        {
+            prepare_git_config(
+                home.as_deref(),
+                &source,
+                temporary.path(),
+                &mut mounts,
+                &mut env_map,
+                &mut warnings,
+            )?;
         }
         prepare_known_hosts(
             options,
@@ -500,10 +500,10 @@ fn prepare_git_config(
                 || container_git_path(value),
                 |target| Some(PathBuf::from(target)),
             );
-            if let Some(target) = target {
-                if !mounts.iter().any(|mount| mount.target == target) {
-                    mounts.push(bind(&host_path, &target, true));
-                }
+            if let Some(target) = target
+                && !mounts.iter().any(|mount| mount.target == target)
+            {
+                mounts.push(bind(&host_path, &target, true));
             }
         }
     }

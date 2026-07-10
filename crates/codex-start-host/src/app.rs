@@ -3078,7 +3078,7 @@ mod tests {
         let first = test_mount("cache-a", "/home/codex/.cache", false);
         let mut identical = vec![first.clone(), first.clone()];
         validate_mount_targets(&mut identical).expect("identical mounts");
-        assert_eq!(identical, [first.clone()]);
+        assert_eq!(identical, std::slice::from_ref(&first));
 
         let mut conflicting = vec![first, test_mount("cache-b", "/home/codex/.cache", false)];
         let error = validate_mount_targets(&mut conflicting).expect_err("conflict");
