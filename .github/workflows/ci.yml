@@ -20,7 +20,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
@@ -37,7 +37,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
@@ -57,7 +57,7 @@ jobs:
             --fail-under-lines 75
       - name: Upload LCOV report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: core-proxy-coverage
           path: coverage/lcov.info
@@ -70,7 +70,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: 1.88.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.88.0
@@ -86,7 +86,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-deny
@@ -103,7 +103,7 @@ jobs:
         runtime: [docker, podman]
         environment: [generic, web, uv, rust]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Podman
@@ -201,7 +201,7 @@ jobs:
             >"${RUNNER_TEMP}/codex-start-generic.tar.zst"
       - name: Upload the generic image for the nested Podman launcher test
         if: matrix.runtime == 'docker' && matrix.environment == 'generic'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nested-podman-generic-image
           path: ${{ runner.temp }}/codex-start-generic.tar.zst
@@ -218,7 +218,7 @@ jobs:
       RUSTUP_TOOLCHAIN: stable
       PODMAN_NESTED_IMAGE: quay.io/podman/stable:v5.4.2@sha256:52536d900c9e7e7cc924bb737eb8c570eeaa3c50f6a3b0b563eb0ec9c48807e4
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -226,7 +226,7 @@ jobs:
       - name: Build the Linux launcher
         run: cargo build --locked --bin codex-start
       - name: Download the prebuilt generic environment
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: nested-podman-generic-image
           path: ${{ runner.temp }}/nested-podman-image
@@ -355,7 +355,7 @@ jobs:
       matrix:
         runtime: [docker, podman]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Podman
         if: matrix.runtime == 'podman'
@@ -385,7 +385,7 @@ jobs:
       RUSTUP_TOOLCHAIN: stable
       CODEX_START_CI_SECRET_SOURCE: codex-start-ci-secret-value
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
