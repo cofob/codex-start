@@ -1005,7 +1005,7 @@ fn systemd_quote(value: &str) -> Result<String> {
     ))
 }
 
-fn follow_log(store: &SessionStore, id: Uuid, follow: bool) -> Result<u8> {
+pub(crate) fn follow_log(store: &SessionStore, id: Uuid, follow: bool) -> Result<u8> {
     let path = store.log_path(id);
     let mut file = fs::File::open(&path).map_err(|source| HostError::io(&path, source))?;
     let mut position = 0;

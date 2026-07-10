@@ -16,6 +16,7 @@ use codex_start_core::{
     RuntimeKind as CoreRuntimeKind, SecretMount, SecretProvider, TtyMode, UnixArgument,
     WorktreeMode as CoreWorktreeMode,
 };
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 use tracing_subscriber::EnvFilter;
@@ -1091,8 +1092,10 @@ fn start_persistent_run(
         && std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
     {
-        wait_for_session_container(&runtime, &store, &record)?;
-        return crate::session::attach_record(&store, &record);
+        return match wait_for_session_container(&runtime, &store, &record)? {
+            SessionWaitOutcome::Ready => crate::session::attach_record(&store, &record),
+            SessionWaitOutcome::FollowingLogs => Ok(0),
+        };
     }
     Ok(0)
 }
@@ -1128,11 +1131,16 @@ fn is_executable_file(path: &Path) -> bool {
     }
 }
 
+enum SessionWaitOutcome {
+    Ready,
+    FollowingLogs,
+}
+
 fn wait_for_session_container(
     runtime: &Runtime,
     store: &SessionStore,
     record: &SessionRecord,
-) -> Result<()> {
+) -> Result<SessionWaitOutcome> {
     let started = std::time::Instant::now();
     let deadline = started + SESSION_STARTUP_TIMEOUT;
     let mut next_progress = started;
@@ -1149,7 +1157,7 @@ fn wait_for_session_container(
                     ],
                 )?;
             if ready {
-                return Ok(());
+                return Ok(SessionWaitOutcome::Ready);
             }
         }
         let current = store.read(record.id)?;
@@ -1162,6 +1170,11 @@ fn wait_for_session_container(
                 record.id
             )));
         }
+        if follow_logs_requested()? {
+            eprintln!("following logs for session {} (Ctrl-C to stop)", record.id);
+            crate::session::follow_log(store, record.id, true)?;
+            return Ok(SessionWaitOutcome::FollowingLogs);
+        }
         let now = std::time::Instant::now();
         if now >= next_progress {
             let phase = if container_running {
@@ -1170,7 +1183,7 @@ fn wait_for_session_container(
                 "preparing the environment image and container"
             };
             eprintln!(
-                "waiting for session {}: {phase} ({}s elapsed)",
+                "waiting for session {}: {phase} ({}s elapsed; press Enter to follow logs)",
                 record.id,
                 now.duration_since(started).as_secs()
             );
@@ -1185,6 +1198,21 @@ fn wait_for_session_container(
         "session {} did not become ready within 10 minutes",
         record.id
     )))
+}
+
+fn follow_logs_requested() -> Result<bool> {
+    if !event::poll(Duration::ZERO).map_err(|source| HostError::io("stdin", source))? {
+        return Ok(false);
+    }
+    let input = event::read().map_err(|source| HostError::io("stdin", source))?;
+    Ok(is_follow_logs_event(&input))
+}
+
+fn is_follow_logs_event(input: &Event) -> bool {
+    matches!(
+        input,
+        Event::Key(key) if key.kind == KeyEventKind::Press && key.code == KeyCode::Enter
+    )
 }
 
 async fn execute_resolved_run(
@@ -4225,18 +4253,29 @@ mod tests {
         CodexConfig, EffectiveConfig, ForwardingConfig, GitConfig, HomeConfig, McpOauthCallback,
         MergeConfig, NetworkMode, ProxyConfig, RuntimeKind, TtyMode, WorktreeMode,
     };
+    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     use super::{
         MERGE_RESULT_FILE, MergeAgentStatus, MergeBundle, MergeSourceMount, RunKind,
         container_name, derived_allowed_hosts, doctor_container_request, home_doctor_check,
-        merge_agent_prompt, merge_codex_args, native_codex_override_expressions,
-        native_codex_project_config_paths, native_codex_urls_from_paths,
-        preview_forwarding_metadata, replace_mount_targets, validate_mount_targets,
-        workload_command,
+        is_follow_logs_event, merge_agent_prompt, merge_codex_args,
+        native_codex_override_expressions, native_codex_project_config_paths,
+        native_codex_urls_from_paths, preview_forwarding_metadata, replace_mount_targets,
+        validate_mount_targets, workload_command,
     };
     use crate::git::{AgentMergeSource, AgentMergeTask};
     use crate::launch_plan::ForwardingTransport;
     use crate::runtime::{MountKind, MountRequest};
+
+    #[test]
+    fn only_enter_requests_inline_log_following() {
+        let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let other = Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+
+        assert!(is_follow_logs_event(&enter));
+        assert!(!is_follow_logs_event(&other));
+        assert!(!is_follow_logs_event(&Event::Resize(80, 24)));
+    }
 
     #[test]
     fn container_names_are_stable_and_bounded() {
