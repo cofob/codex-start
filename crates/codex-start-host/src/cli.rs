@@ -47,6 +47,8 @@ pub struct Cli {
 pub enum Command {
     /// Start Codex in a selected development environment.
     Run(RunArgs),
+    /// Merge branches or managed worktrees into the current branch using a Codex agent.
+    Merge(MergeArgs),
     /// Start or attach to a login shell.
     Shell(ShellArgs),
     /// Manage worktree changes and lifecycle.
@@ -160,6 +162,83 @@ pub struct RunArgs {
     /// Arguments passed verbatim to Codex.
     #[arg(last = true, allow_hyphen_values = true)]
     pub codex_args: Vec<OsString>,
+}
+
+/// Conflict-resolution merge-agent arguments.
+#[derive(Clone, Debug, Args)]
+pub struct MergeArgs {
+    /// Environment name. Uses configured detection when omitted.
+    #[arg(long)]
+    pub environment: Option<String>,
+
+    /// Model used only for this merge-agent task.
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Container runner overrides.
+    #[command(flatten)]
+    pub options: MergeRunOptions,
+
+    /// Ordered local branch names or managed worktree names to merge.
+    #[arg(value_name = "SOURCE", required = true)]
+    pub sources: Vec<String>,
+}
+
+/// Runner overrides available to the fixed-current-worktree merge mode.
+#[derive(Clone, Debug, Default, Args)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct MergeRunOptions {
+    /// Select Docker, Podman, or automatic detection.
+    #[arg(long, value_enum)]
+    pub runtime: Option<RuntimeKind>,
+
+    /// Override the runtime executable path.
+    #[arg(long)]
+    pub runtime_program: Option<PathBuf>,
+
+    /// Select a named managed, host, or path Codex home.
+    #[arg(long)]
+    pub home: Option<String>,
+
+    /// Select an egress mode.
+    #[arg(long, value_enum)]
+    pub network: Option<NetworkModeArg>,
+
+    /// Disable all egress.
+    #[arg(long, conflicts_with = "network")]
+    pub offline: bool,
+
+    /// Deprecated alias selecting allowlist networking.
+    #[arg(long, conflicts_with_all = ["network", "offline"])]
+    pub no_network: bool,
+
+    /// Publish a container port to the host. Repeatable.
+    #[arg(short = 'p', long = "publish", value_name = "SPEC")]
+    pub publish: Vec<PortSpec>,
+
+    /// Rebuild the environment image even when the content hash exists.
+    #[arg(long)]
+    pub rebuild: bool,
+
+    /// Pull locked images instead of building when possible.
+    #[arg(long)]
+    pub pull: bool,
+
+    /// Do not allocate a pseudo-terminal.
+    #[arg(long)]
+    pub no_tty: bool,
+
+    /// Print the redacted execution plan without changing runtime or Git state.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Additional allowed egress host or host:port pattern.
+    #[arg(long = "allow-host")]
+    pub allow_hosts: Vec<String>,
+
+    /// Expert engine argument; reduces portability. Repeatable.
+    #[arg(long = "runtime-arg", allow_hyphen_values = true)]
+    pub runtime_args: Vec<OsString>,
 }
 
 /// Shell arguments.
@@ -520,7 +599,7 @@ fn parse_port(value: &str, label: &str) -> std::result::Result<u16, String> {
 
 /// Dispatch an already parsed command.
 pub async fn run(cli: Cli) -> Result<u8> {
-    app::run(cli).await
+    Box::pin(app::run(cli)).await
 }
 
 #[cfg(test)]
@@ -568,6 +647,30 @@ mod tests {
                     if codex_args.as_slice()
                         == [OsString::from("login"), OsString::from("--device-auth")])
         ));
+    }
+
+    #[test]
+    fn parses_ordered_merge_sources_and_task_model() {
+        let cli = Cli::try_parse_from([
+            "codex-start",
+            "merge",
+            "--environment",
+            "rust",
+            "--model",
+            "merge-model",
+            "feature-one",
+            "worktree-two",
+        ])
+        .expect("merge parse");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Merge(args))
+                if args.environment.as_deref() == Some("rust")
+                    && args.model.as_deref() == Some("merge-model")
+                    && args.sources == ["feature-one", "worktree-two"]
+        ));
+        assert!(Cli::try_parse_from(["codex-start", "merge"]).is_err());
+        assert!(Cli::try_parse_from(["codex-start", "merge", "--worktree", "feature"]).is_err());
     }
 
     #[cfg(unix)]

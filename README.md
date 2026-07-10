@@ -28,6 +28,12 @@ codex-start run rust -- exec --json "run the tests"
 # Open a shell with the same mounts, caches, home, and network policy.
 codex-start shell uv
 
+# Merge ordered local branches or managed worktrees into the current branch.
+codex-start merge feature-api agent-ui
+
+# Override the dedicated merge-agent model for one task.
+codex-start merge --model another-model feature-api
+
 # Validate and print the redacted logical plan without contacting an engine.
 codex-start --output json run --dry-run
 
@@ -56,6 +62,8 @@ codex-start resources cleanup
 
 `worktree cleanup` refuses dirty managed worktrees and deletes only merged owned branches; add `--force` to remove dirty worktrees and unmerged owned branches. `resources cleanup` removes stopped/stale owned resources and reports running workloads as skipped; add `--force` to stop and remove running workloads too.
 
+`merge` requires a clean, attached current branch and clean named source worktrees. Each source first resolves as an exact local branch and otherwise as a codex-start-managed worktree name. Codex merges sources in argument order, resolves conflicts, repairs integration failures, runs relevant checks, and must leave committed clean history. Failed or blocked runs preserve the repository for inspection; codex-start never resets or aborts it automatically.
+
 Migration aliases from pi-start are accepted, including `--commit`, `--squash`, `--move`, `--edit`, `--shell`, `--cleanup`, `--cleanup-git`, and `--no-network`. The last is a deprecated name for allowlist mode; `--offline` means no egress. In positional compatibility mode, a first value matching a loaded environment selects it and the remainder is passed to Codex; when it does not match an environment, all values are passed to Codex with the configured or detected environment.
 
 ## Environments
@@ -67,9 +75,9 @@ Migration aliases from pi-start are accepted, including `--commit`, `--squash`, 
 | `uv` | generic plus pinned uv and the `just` task runner | requires `pyproject.toml`; fresh venv; full sync |
 | `rust` | pinned stable Rust 1.97/Clippy/rustfmt/analyzer, LLVM/debuggers, Node 24, `socat` | requires `Cargo.toml`; project Cargo/target caches |
 
-Images and artifacts are pinned in [assets/images.lock.toml](assets/images.lock.toml) by version, digest, npm integrity, or checksum for Linux amd64 and arm64. Custom schema-v1 manifests can inherit a built-in and configure an image/build, argv-only preparation, mounts, cache scopes, ports, host services, environment and secret references, markers, and egress hosts. A custom prebuilt `image` must use an explicit non-`latest` tag or a complete `sha256` digest. It must contain the version-matched `codex-start-init` helper at `/usr/local/bin/codex-start-init`; allowlist-mode host SSH also requires `/usr/local/bin/codex-start-host-ssh`. See [environment documentation](docs/environments.md).
+Base images and non-Codex artifacts are pinned in [assets/images.lock.toml](assets/images.lock.toml) by version, digest, or checksum for Linux amd64 and arm64. Built-in environment builds install the current Codex npm release. Custom schema-v1 manifests can inherit a built-in and configure an image/build, argv-only preparation, mounts, cache scopes, ports, host services, environment and secret references, markers, and egress hosts. A custom prebuilt `image` must use an explicit non-`latest` tag or a complete `sha256` digest. It must contain the version-matched `codex-start-init` helper at `/usr/local/bin/codex-start-init`; allowlist-mode host SSH also requires `/usr/local/bin/codex-start-host-ssh`. See [environment documentation](docs/environments.md).
 
-Normal runs reuse content-addressed local builds. `--pull` fetches versioned built-in images from `${CODEX_START_IMAGE_REGISTRY:-ghcr.io/cofob}` or refreshes a custom `image` reference; custom `[build]` environments use `--rebuild` instead. `env update` copies the lock embedded in the installed binary to the user config—it does not query upstream registries.
+Normal runs reuse content-addressed local builds. `--pull` fetches versioned built-in images from `${CODEX_START_IMAGE_REGISTRY:-ghcr.io/cofob}` or refreshes a custom `image` reference; custom `[build]` environments use `--rebuild` instead. `env update` copies the lock embedded in the installed binary to the user config; its timestamp refreshes built-in image tags, so the next run rebuilds and installs the current Codex release.
 
 ## Configuration
 
@@ -84,6 +92,9 @@ runtime = "auto"
 network = "allowlist"
 worktree = "auto"
 home = "default"
+
+[settings.merge]
+model = "gpt-5.6-terra"
 
 [settings.secret_refs]
 DOCS_MCP_TOKEN = "docs-mcp"
@@ -103,6 +114,8 @@ variable = "DOCS_MCP_TOKEN"
 Precedence is CLI, `CODEX_START__...` variables, project, selected profile, global, environment defaults, then built-ins. `config show` renders the result and `config explain` shows each value’s source. Launcher keys are strict; `[settings.codex.config]` intentionally accepts all native/future Codex keys. The [configuration reference](docs/configuration.md) includes schema-validated examples, homes, profiles, MCP, and secret providers.
 
 `codex-start run ENV -- ...` always executes the real `codex` binary. Native `-c` overrides, the configured Codex profile, and `[settings.codex].args` are placed before the arguments after `--`; those final arguments are retained byte-for-byte and may select any Codex command or feature. `shell` is the exception: it executes the requested shell argv directly.
+
+`codex-start merge [--environment ENV] [--model MODEL] SOURCE...` runs a non-interactive merge agent in the current worktree. Its task model follows normal configuration precedence through `[settings.merge].model`, with `gpt-5.6-terra` as the built-in default and `--model` as the highest-precedence override.
 
 ## Network and secrets
 

@@ -9,7 +9,6 @@ use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use clap::{Parser, Subcommand, ValueEnum};
 use flate2::{Compression, GzBuilder};
 use serde::Deserialize;
@@ -284,29 +283,8 @@ struct LockedImagePlatform {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LockedArtifacts {
-    codex: LockedCodex,
     uv: LockedUv,
     just: LockedUv,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LockedCodex {
-    kind: String,
-    version: String,
-    url: String,
-    integrity: String,
-    sha512: String,
-    platforms: BTreeMap<String, LockedCodexPlatform>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LockedCodexPlatform {
-    npm_version: String,
-    url: String,
-    integrity: String,
-    sha512: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -361,26 +339,6 @@ fn validate_lock(lock: &ImageLock) -> Result<()> {
     validate_image("node", &lock.images.node)?;
     validate_image("rust", &lock.images.rust)?;
     validate_image("debian", &lock.images.debian)?;
-
-    let codex = &lock.artifacts.codex;
-    ensure(codex.kind == "npm", "Codex artifact kind must be npm")?;
-    validate_version("Codex", &codex.version)?;
-    validate_https_url("Codex", &codex.url)?;
-    ensure(
-        codex.url.contains(&format!("codex-{}.tgz", codex.version)),
-        "Codex artifact URL does not contain its version",
-    )?;
-    validate_npm_integrity(&codex.integrity, &codex.sha512)?;
-    validate_platform_keys("Codex artifact", &codex.platforms)?;
-    for (platform, artifact) in &codex.platforms {
-        validate_version(&format!("Codex {platform}"), &artifact.npm_version)?;
-        validate_https_url(&format!("Codex {platform}"), &artifact.url)?;
-        ensure(
-            artifact.url.contains(&artifact.npm_version),
-            format!("Codex {platform} URL does not contain its npm version"),
-        )?;
-        validate_npm_integrity(&artifact.integrity, &artifact.sha512)?;
-    }
 
     let uv = &lock.artifacts.uv;
     ensure(uv.kind == "archive", "uv artifact kind must be archive")?;
@@ -473,36 +431,6 @@ fn validate_https_url(label: &str, url: &str) -> Result<()> {
     ensure(
         url.starts_with("https://") && !url.contains(char::is_whitespace),
         format!("{label} URL must be HTTPS without whitespace"),
-    )
-}
-
-fn validate_npm_integrity(integrity: &str, sha512: &str) -> Result<()> {
-    let Some(encoded) = integrity.strip_prefix("sha512-") else {
-        return Err(Error::Validation(
-            "Codex npm integrity must use sha512".to_owned(),
-        ));
-    };
-    ensure(
-        encoded.len() >= 80
-            && encoded
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')),
-        "Codex npm integrity is not a plausible base64 SHA-512 value",
-    )?;
-    ensure(
-        sha512.len() == 128 && sha512.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "Codex SHA-512 must contain exactly 128 hexadecimal digits",
-    )?;
-    let decoded = BASE64_STANDARD
-        .decode(encoded)
-        .map_err(|error| Error::Validation(format!("invalid Codex npm integrity: {error}")))?;
-    let mut decoded_hex = String::with_capacity(decoded.len() * 2);
-    for byte in decoded {
-        write!(decoded_hex, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    ensure(
-        decoded_hex.eq_ignore_ascii_case(sha512),
-        "Codex integrity and SHA-512 lock values differ",
     )
 }
 
@@ -797,7 +725,7 @@ fn validate_build(
         validate_identifier("Docker target", target)?;
     }
     let expected = docker_build_args(lock);
-    for key in ["NODE_IMAGE", "RUST_IMAGE", "CODEX_VERSION", "CODEX_SHA512"] {
+    for key in ["NODE_IMAGE", "RUST_IMAGE"] {
         ensure(
             build.args.get(key) == expected.get(key),
             format!("{environment} build argument {key} differs from images.lock.toml"),
@@ -933,75 +861,7 @@ fn validate_repository(root: &Path) -> Result<()> {
     let lock_path = root.join("assets/images.lock.toml");
     let lock = load_and_validate_lock(&lock_path)?;
     validate_manifests(root, &lock)?;
-    validate_docker_pins(root, &lock)?;
-    validate_codex_package_lock(root, &lock)
-}
-
-fn validate_codex_package_lock(root: &Path, lock: &ImageLock) -> Result<()> {
-    let package_path = root.join("images/environment/codex-package.json");
-    let package: serde_json::Value = serde_json::from_str(&read_to_string(&package_path)?)?;
-    ensure(
-        package
-            .pointer("/dependencies/@openai~1codex")
-            .and_then(serde_json::Value::as_str)
-            == Some(lock.artifacts.codex.version.as_str()),
-        "Codex package.json version differs from images.lock.toml",
-    )?;
-
-    let lock_path = root.join("images/environment/codex-package-lock.json");
-    let npm_lock: serde_json::Value = serde_json::from_str(&read_to_string(&lock_path)?)?;
-    ensure(
-        npm_lock
-            .get("lockfileVersion")
-            .and_then(serde_json::Value::as_u64)
-            == Some(3),
-        "Codex npm lock must use lockfileVersion 3",
-    )?;
-    validate_locked_npm_package(
-        &npm_lock,
-        "node_modules/@openai/codex",
-        &lock.artifacts.codex.version,
-        &lock.artifacts.codex.url,
-        &lock.artifacts.codex.integrity,
-    )?;
-    for (platform, package_name) in [
-        ("linux/amd64", "node_modules/@openai/codex-linux-x64"),
-        ("linux/arm64", "node_modules/@openai/codex-linux-arm64"),
-    ] {
-        let artifact = &lock.artifacts.codex.platforms[platform];
-        validate_locked_npm_package(
-            &npm_lock,
-            package_name,
-            &artifact.npm_version,
-            &artifact.url,
-            &artifact.integrity,
-        )?;
-    }
-    Ok(())
-}
-
-fn validate_locked_npm_package(
-    npm_lock: &serde_json::Value,
-    package_name: &str,
-    version: &str,
-    url: &str,
-    integrity: &str,
-) -> Result<()> {
-    let package = npm_lock
-        .get("packages")
-        .and_then(|packages| packages.get(package_name))
-        .ok_or_else(|| Error::Validation(format!("Codex npm lock is missing {package_name}")))?;
-    for (field, expected) in [
-        ("version", version),
-        ("resolved", url),
-        ("integrity", integrity),
-    ] {
-        ensure(
-            package.get(field).and_then(serde_json::Value::as_str) == Some(expected),
-            format!("Codex npm lock {package_name} {field} differs from images.lock.toml"),
-        )?;
-    }
-    Ok(())
+    validate_docker_pins(root, &lock)
 }
 
 fn validate_docker_pins(root: &Path, lock: &ImageLock) -> Result<()> {
@@ -1011,8 +871,6 @@ fn validate_docker_pins(root: &Path, lock: &ImageLock) -> Result<()> {
     for key in [
         "NODE_IMAGE",
         "RUST_IMAGE",
-        "CODEX_VERSION",
-        "CODEX_SHA512",
         "UV_VERSION",
         "UV_SHA256_AMD64",
         "UV_SHA256_ARM64",
@@ -1048,14 +906,6 @@ fn docker_build_args(lock: &ImageLock) -> BTreeMap<String, String> {
     args.insert("NODE_IMAGE".to_owned(), lock.images.node.reference());
     args.insert("RUST_IMAGE".to_owned(), lock.images.rust.reference());
     args.insert("DEBIAN_IMAGE".to_owned(), lock.images.debian.reference());
-    args.insert(
-        "CODEX_VERSION".to_owned(),
-        lock.artifacts.codex.version.clone(),
-    );
-    args.insert(
-        "CODEX_SHA512".to_owned(),
-        lock.artifacts.codex.sha512.clone(),
-    );
     args.insert("UV_VERSION".to_owned(), lock.artifacts.uv.version.clone());
     args.insert(
         "UV_SHA256_AMD64".to_owned(),

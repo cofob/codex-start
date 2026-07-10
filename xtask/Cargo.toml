@@ -7,7 +7,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-base64.workspace = true
 clap.workspace = true
 flate2.workspace = true
 serde.workspace = true

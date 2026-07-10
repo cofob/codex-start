@@ -13,10 +13,7 @@ RUN cargo build --locked --release --package codex-start-proxy --bins
 FROM ${NODE_IMAGE} AS node-source
 
 FROM node-source AS generic-base
-ARG CODEX_VERSION=0.142.5
-ARG CODEX_SHA512=5901290fb97793af1e2003f46aadbc11d475f0434101ff03ca9af3161ccdc02390252bf89c7ce9c13f05977d0825a729ae4a366429940598ccdaef78d65db22f
-LABEL io.codex-start.codex.version="${CODEX_VERSION}" \
-      io.codex-start.codex.wrapper-sha512="${CODEX_SHA512}"
+ARG CODEX_REFRESH=embedded
 ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/home/codex \
     GH_CONFIG_DIR=/home/codex/.config/gh \
@@ -40,11 +37,8 @@ RUN apt-get update \
     && chmod 0700 /home/codex/.gnupg /home/codex/.ssh \
     && printf 'codex ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/codex \
     && chmod 0440 /etc/sudoers.d/codex
-COPY images/environment/codex-package.json /opt/codex/package.json
-COPY images/environment/codex-package-lock.json /opt/codex/package-lock.json
-RUN cd /opt/codex \
-    && npm ci --ignore-scripts --omit=dev \
-    && ln -s /opt/codex/node_modules/.bin/codex /usr/local/bin/codex \
+RUN echo "installing Codex refresh ${CODEX_REFRESH}" \
+    && npm install --global --omit=dev @openai/codex@latest \
     && npm cache clean --force
 COPY --from=helper-builder /source/target/release/codex-start-init /usr/local/bin/codex-start-init
 COPY --from=helper-builder /source/target/release/codex-start-host-ssh /usr/local/bin/codex-start-host-ssh
@@ -102,10 +96,7 @@ RUN set -eu; \
       /home/codex/.cache/uv /home/codex/.venv /home/codex/.local/share/uv/tools
 
 FROM ${RUST_IMAGE} AS rust
-ARG CODEX_VERSION=0.142.5
-ARG CODEX_SHA512=5901290fb97793af1e2003f46aadbc11d475f0434101ff03ca9af3161ccdc02390252bf89c7ce9c13f05977d0825a729ae4a366429940598ccdaef78d65db22f
-LABEL io.codex-start.codex.version="${CODEX_VERSION}" \
-      io.codex-start.codex.wrapper-sha512="${CODEX_SHA512}"
+ARG CODEX_REFRESH=embedded
 ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/home/codex \
     GH_CONFIG_DIR=/home/codex/.config/gh \
@@ -138,11 +129,8 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && chmod 0700 /home/codex/.gnupg /home/codex/.ssh \
     && printf 'codex ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/codex \
     && chmod 0440 /etc/sudoers.d/codex
-COPY images/environment/codex-package.json /opt/codex/package.json
-COPY images/environment/codex-package-lock.json /opt/codex/package-lock.json
-RUN cd /opt/codex \
-    && npm ci --ignore-scripts --omit=dev \
-    && ln -s /opt/codex/node_modules/.bin/codex /usr/local/bin/codex \
+RUN echo "installing Codex refresh ${CODEX_REFRESH}" \
+    && npm install --global --omit=dev @openai/codex@latest \
     && npm cache clean --force
 COPY --from=helper-builder /source/target/release/codex-start-init /usr/local/bin/codex-start-init
 COPY --from=helper-builder /source/target/release/codex-start-host-ssh /usr/local/bin/codex-start-host-ssh

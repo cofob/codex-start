@@ -2,6 +2,8 @@
 
 codex-start treats the workload container, its explicit mounts, and its network policy as the primary boundary. The default Codex settings are `sandbox_mode="danger-full-access"` and `approval_policy="on-request"` inside that boundary. User Codex argv and native configuration can override them. Use a nested Codex sandbox only after verifying that the container runtime supplies the Linux facilities it needs.
 
+The autonomous `merge` command explicitly disables Codex's nested approvals and sandbox because the workload container is its execution boundary. It exposes only the current target checkout read-write, the repository's shared Git directory read-write, and selected owned source worktrees read-only, in addition to the normal configured home, caches, secrets, and host services. Arbitrary worktree paths are not accepted. Source branches/commits and worktree cleanliness are captured before launch and revalidated afterward.
+
 On a rootless Podman server, the service user's identity is mapped to the selected workload UID/GID with `keep-id:uid=...,gid=...`. The init helper is explicitly started as namespace root so it can atomically remap the image's `codex` account and prepare container-owned writable roots; every preparation command, helper, and the final Codex process runs after dropping to the mapped identity. This preserves checkout ownership without making the final workload host root, including when a remote service account and client use different numeric IDs. Identity-altering expert runtime arguments are rejected in this mode. Rootful Podman, Docker, and the non-workload sidecars do not receive this mapping.
 
 ## Network modes
@@ -46,6 +48,8 @@ Dry-run records provider names, target child variables, and non-secret `/run/sec
 ## Dry-run and local state
 
 `--dry-run` does not contact Docker/Podman or create runtime resources, worktrees, homes, secret bundles, or host listeners. It validates a typed logical launch plan, including all raw Codex argv, network rules, mounts, init preparation, secret metadata, and environment host-service declarations. Host socket discovery, authenticated addresses, and OAuth ephemeral ports are finalized only during a real launch and are identified as such in plan warnings.
+
+For `merge --dry-run`, source resolution and clean-state validation are read-only Git probes. The plan includes the current target mount, shared Git directory, read-only named source mounts, merge model, generated Codex argv, and a planned result-bundle mount; no agent, merge, or result bundle is started.
 
 Configuration discovery can create codex-start's private XDG directories, and environment loading can extract the embedded, content-addressed build bundle into the cache. Dry-run is therefore runtime-side-effect-free, not a promise of zero local filesystem writes.
 

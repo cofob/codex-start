@@ -16,10 +16,11 @@ pub mod project;
 
 pub use config::{
     CodexConfig, ConfigDocument, ConfigError, ConfigLayer, ConfigLayerKind, ConfigPatch,
-    ConfigResolver, EffectiveConfig, ForwardingConfig, ForwardingPatch, GitConfig, GitPatch,
-    HomeConfig, HomeKind, McpOauthCallback, NetworkMode, ProfileConfig, Provenance, ProxyConfig,
-    ProxyPatch, ResolvedConfig, RuntimeKind, SecretProvider, SecretProviderKind, SshAgentBridge,
-    TtyMode, ValueSource, WorktreeMode, environment_patch,
+    ConfigResolver, DEFAULT_MERGE_MODEL, EffectiveConfig, ForwardingConfig, ForwardingPatch,
+    GitConfig, GitPatch, HomeConfig, HomeKind, McpOauthCallback, MergeConfig, MergePatch,
+    NetworkMode, ProfileConfig, Provenance, ProxyConfig, ProxyPatch, ResolvedConfig, RuntimeKind,
+    SecretProvider, SecretProviderKind, SshAgentBridge, TtyMode, ValueSource, WorktreeMode,
+    environment_patch,
 };
 pub use environment::{
     BuildSpec, CacheScope, CacheSpec, CommandSpec, EnvironmentError, EnvironmentManifest,

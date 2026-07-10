@@ -1,6 +1,7 @@
 //! Git repository and worktree lifecycle management.
 
 use std::{
+    collections::BTreeSet,
     ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
@@ -64,6 +65,27 @@ pub struct Workspace {
     pub created: bool,
     /// Whether this invocation created the branch.
     pub branch_created: bool,
+}
+
+/// One immutable source selected for an agent-assisted merge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentMergeSource {
+    /// Original CLI value.
+    pub input: String,
+    /// Resolved local branch name.
+    pub branch: String,
+    /// Commit captured before the agent starts.
+    pub commit: String,
+    /// Managed source worktree, when the input did not name an exact branch.
+    pub worktree: Option<PathBuf>,
+}
+
+/// Clean, immutable merge inputs captured before container launch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentMergeTask {
+    pub target_branch: String,
+    pub target_commit: String,
+    pub sources: Vec<AgentMergeSource>,
 }
 
 impl Workspace {
@@ -146,6 +168,121 @@ impl GitRepo {
     /// Resolve project-private settings inside the shared Git directory.
     pub fn project_config_path(&self) -> PathBuf {
         self.common_dir.join("codex-start.toml")
+    }
+
+    /// Resolve ordered local branches or owned worktree names for an autonomous merge.
+    pub fn prepare_agent_merge(
+        &self,
+        base_dir: &Path,
+        branch_prefix: &str,
+        inputs: &[String],
+    ) -> Result<AgentMergeTask> {
+        if inputs.is_empty() {
+            return Err(HostError::Usage(
+                "merge requires at least one branch or managed worktree".to_owned(),
+            ));
+        }
+        ensure_merge_ready(&self.root, "target")?;
+        let target_branch = self.current_branch()?.ok_or_else(|| {
+            HostError::Git("merge target must have a checked-out branch".to_owned())
+        })?;
+        let target_commit = self.rev_parse("HEAD")?;
+        let mut branches = BTreeSet::new();
+        let mut sources = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            let full_ref = format!("refs/heads/{input}");
+            let branch_exists = run_capture(&self.git_spec([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                full_ref.as_str(),
+            ]))?
+            .status
+            .success();
+            let (branch, commit, worktree) = if branch_exists {
+                (
+                    input.clone(),
+                    self.rev_parse(&format!("{full_ref}^{{commit}}"))?,
+                    None,
+                )
+            } else {
+                let path = self.select_workspace(base_dir, Some(input), branch_prefix)?;
+                ensure_distinct(&path, &self.root)?;
+                ensure_non_overlapping(&path, &self.root)?;
+                ensure_merge_ready(&path, &format!("source worktree {input:?}"))?;
+                let candidate = Self::require(&path)?;
+                let branch = candidate.current_branch()?.ok_or_else(|| {
+                    HostError::Git(format!(
+                        "managed source worktree {} has detached HEAD",
+                        path.display()
+                    ))
+                })?;
+                let commit = candidate.rev_parse("HEAD")?;
+                (branch, commit, Some(path))
+            };
+            if branch == target_branch {
+                return Err(HostError::Git(format!(
+                    "merge source {input:?} resolves to the current target branch {target_branch:?}"
+                )));
+            }
+            if !branches.insert(branch.clone()) {
+                return Err(HostError::Git(format!(
+                    "merge source {input:?} duplicates branch {branch:?}"
+                )));
+            }
+            sources.push(AgentMergeSource {
+                input: input.clone(),
+                branch,
+                commit,
+                worktree,
+            });
+        }
+        Ok(AgentMergeTask {
+            target_branch,
+            target_commit,
+            sources,
+        })
+    }
+
+    /// Verify that an agent completed the requested merge without altering sources.
+    pub fn verify_agent_merge(&self, task: &AgentMergeTask) -> Result<()> {
+        let branch = self.current_branch()?.ok_or_else(|| {
+            HostError::Git("merge agent left the target at detached HEAD".to_owned())
+        })?;
+        if branch != task.target_branch {
+            return Err(HostError::Git(format!(
+                "merge agent changed target branch from {:?} to {branch:?}",
+                task.target_branch
+            )));
+        }
+        ensure_merge_ready(&self.root, "target after agent run")?;
+        for source in &task.sources {
+            let ancestor = run_capture(&self.git_spec([
+                "merge-base",
+                "--is-ancestor",
+                source.commit.as_str(),
+                "HEAD",
+            ]))?;
+            if !ancestor.status.success() {
+                return Err(HostError::Git(format!(
+                    "target HEAD does not contain source {:?} at {}",
+                    source.branch, source.commit
+                )));
+            }
+            if let Some(path) = &source.worktree {
+                ensure_merge_ready(path, &format!("source worktree {:?}", source.input))?;
+                let candidate = Self::require(path)?;
+                if candidate.current_branch()?.as_deref() != Some(source.branch.as_str())
+                    || candidate.rev_parse("HEAD")? != source.commit
+                {
+                    return Err(HostError::Git(format!(
+                        "merge agent changed source worktree {:?}",
+                        source.input
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Create or reuse a run workspace.
@@ -573,6 +710,33 @@ fn is_clean(worktree: &Path) -> Result<bool> {
     Ok(!has_changes(worktree)?)
 }
 
+fn ensure_merge_ready(worktree: &Path, label: &str) -> Result<()> {
+    if !is_clean(worktree)? {
+        return Err(HostError::Git(format!(
+            "{label} must be clean before agent-assisted merge"
+        )));
+    }
+    for marker in [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "rebase-merge",
+        "rebase-apply",
+        "sequencer",
+    ] {
+        let path = git_text(
+            worktree,
+            ["rev-parse", "--path-format=absolute", "--git-path", marker],
+        )?;
+        if fs::symlink_metadata(&path).is_ok() {
+            return Err(HostError::Git(format!(
+                "{label} has an unfinished Git operation ({marker})"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn has_changes(worktree: &Path) -> Result<bool> {
     let tracked = run_capture(&CommandSpec::new("git").args([
         "-C",
@@ -683,6 +847,18 @@ fn ensure_distinct(left: &Path, right: &Path) -> Result<()> {
     if canonical_or_original(left) == canonical_or_original(right) {
         Err(HostError::Git(
             "source and target worktrees resolve to the same path".to_owned(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_non_overlapping(left: &Path, right: &Path) -> Result<()> {
+    let left = canonical_or_original(left);
+    let right = canonical_or_original(right);
+    if left.starts_with(&right) || right.starts_with(&left) {
+        Err(HostError::Git(
+            "source and target worktree mounts must not overlap".to_owned(),
         ))
     } else {
         Ok(())
@@ -847,6 +1023,74 @@ mod tests {
                 .expect("cleanup")
         );
         assert!(workspace.host_root.exists());
+    }
+
+    #[test]
+    fn agent_merge_resolves_branches_before_managed_worktree_names() {
+        let repo_dir = repository();
+        let base = tempfile::tempdir().expect("worktree base");
+        let repo = GitRepo::require(repo_dir.path()).expect("discover");
+        let managed = repo
+            .prepare_workspace(WorktreeMode::Always, Some("feature"), base.path(), "codex/")
+            .expect("managed source");
+        fs::write(managed.host_root.join("managed.txt"), "managed\n").expect("managed change");
+        git(&managed.host_root, &["add", "managed.txt"]);
+        git(&managed.host_root, &["commit", "--quiet", "-m", "managed"]);
+
+        git(repo_dir.path(), &["branch", "feature"]);
+        let branch_task = repo
+            .prepare_agent_merge(base.path(), "codex/", &["feature".to_owned()])
+            .expect("exact branch wins");
+        assert_eq!(branch_task.sources[0].branch, "feature");
+        assert!(branch_task.sources[0].worktree.is_none());
+
+        let worktree_task =
+            repo.prepare_agent_merge(base.path(), "codex/", &["codex-feature".to_owned()]);
+        assert!(
+            worktree_task.is_err(),
+            "unknown plain name must not guess a branch"
+        );
+        let worktree_task = repo
+            .prepare_agent_merge(base.path(), "codex/", &["feature".to_owned()])
+            .expect("branch remains preferred");
+        assert!(worktree_task.sources[0].worktree.is_none());
+    }
+
+    #[test]
+    fn agent_merge_accepts_clean_managed_source_and_verifies_reachability() {
+        let repo_dir = repository();
+        let base = tempfile::tempdir().expect("worktree base");
+        let repo = GitRepo::require(repo_dir.path()).expect("discover");
+        let managed = repo
+            .prepare_workspace(WorktreeMode::Always, Some("agent"), base.path(), "codex/")
+            .expect("managed source");
+        fs::write(managed.host_root.join("agent.txt"), "agent\n").expect("source change");
+        git(&managed.host_root, &["add", "agent.txt"]);
+        git(&managed.host_root, &["commit", "--quiet", "-m", "agent"]);
+        let task = repo
+            .prepare_agent_merge(base.path(), "codex/", &["agent".to_owned()])
+            .expect("prepare merge");
+        assert_eq!(task.sources[0].branch, "codex/agent");
+        assert_eq!(
+            task.sources[0].worktree.as_deref(),
+            Some(managed.host_root.as_path())
+        );
+        assert!(repo.verify_agent_merge(&task).is_err());
+        git(repo_dir.path(), &["merge", "--quiet", "codex/agent"]);
+        repo.verify_agent_merge(&task).expect("completed merge");
+    }
+
+    #[test]
+    fn agent_merge_rejects_dirty_target_and_source() {
+        let repo_dir = repository();
+        let base = tempfile::tempdir().expect("worktree base");
+        let repo = GitRepo::require(repo_dir.path()).expect("discover");
+        git(repo_dir.path(), &["branch", "feature"]);
+        fs::write(repo_dir.path().join("dirty.txt"), "dirty\n").expect("dirty target");
+        assert!(
+            repo.prepare_agent_merge(base.path(), "codex/", &["feature".to_owned()])
+                .is_err()
+        );
     }
 
     #[cfg(unix)]

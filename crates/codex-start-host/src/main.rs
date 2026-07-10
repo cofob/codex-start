@@ -29,7 +29,7 @@ use cli::Cli;
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    match cli::run(cli).await {
+    match Box::pin(cli::run(cli)).await {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("codex-start: {error}");

@@ -9,6 +9,9 @@ home = "default"
 publish = ["127.0.0.1:8080:8080"]
 allow_hosts = ["docs.rs", "index.crates.io"]
 
+[settings.merge]
+model = "gpt-5.6-terra"
+
 [settings.secret_refs]
 OPENAI_API_KEY = "openai"
 GITHUB_TOKEN = "github"
@@ -18,4 +21,3 @@ args = ["--search"]
 
 [settings.codex.config]
 model_reasoning_effort = "high"
-

@@ -559,8 +559,7 @@ fn load_lock_overrides(paths: &AppPaths) -> Result<LockOverrides> {
     let node = locked_image(&value, "node")?;
     let rust = locked_image(&value, "rust")?;
     let debian = locked_image(&value, "debian")?;
-    let codex_version = lock_string(&value, &["artifacts", "codex", "version"])?;
-    let codex_sha = lock_string(&value, &["artifacts", "codex", "sha512"])?;
+    let codex_refresh = lock_string(&value, &["generated_at"])?;
     let uv_version = lock_string(&value, &["artifacts", "uv", "version"])?;
     let uv_amd64 = lock_string(
         &value,
@@ -583,8 +582,7 @@ fn load_lock_overrides(paths: &AppPaths) -> Result<LockOverrides> {
         common: BTreeMap::from([
             ("NODE_IMAGE".to_owned(), node),
             ("RUST_IMAGE".to_owned(), rust.clone()),
-            ("CODEX_VERSION".to_owned(), codex_version),
-            ("CODEX_SHA512".to_owned(), codex_sha),
+            ("CODEX_REFRESH".to_owned(), codex_refresh),
         ]),
         uv: BTreeMap::from([
             ("UV_VERSION".to_owned(), uv_version),

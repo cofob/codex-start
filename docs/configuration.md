@@ -45,6 +45,8 @@ The scalar settings are:
 | `allow_ssh_hosts` | Host-SSH authority rules; ports default to 22. |
 | `secret_refs` | Map child environment-variable names to global providers. |
 
+`[settings.merge].model` selects the Codex model used only by `codex-start merge`; it defaults to `gpt-5.6-terra`. The equivalent environment override is `CODEX_START__MERGE__MODEL`, and the command's `--model` option has highest precedence.
+
 Rootless Podman reserves the engine's user, user-namespace, UID/GID-map, and subordinate-ID options. codex-start supplies `--userns keep-id:uid=<workload-uid>,gid=<workload-gid> --user 0:0` itself: the explicit root user is only for the container init helper, which then runs preparation and the final workload as the mapped UID/GID. Conflicting `--runtime-arg` values are rejected instead of producing a checkout that appears writable but fails at runtime. A remote rootless service gets the same explicit target mapping, which avoids assuming its service account shares the client's numeric ID. Docker and rootful Podman are unchanged.
 
 Environment overrides use the same nesting with double underscores. Values are parsed as TOML scalars or arrays:
@@ -70,6 +72,8 @@ worktree = "always"
 ```
 
 `[settings.git]` accepts `worktree_base` (an alternate host directory), `branch_prefix` (default `codex/`), and `editor` (an argv template). An editor argument containing `{path}` receives the selected worktree path; if no argument contains the placeholder, the path is appended. An empty editor vector discovers `$VISUAL`, `$EDITOR`, Zed, VS Code, then the platform opener. `$VISUAL`/`$EDITOR` are parsed into argv, and no editor invocation is evaluated by a shell.
+
+`codex-start merge SOURCE...` fixes the target to the worktree containing the invocation directory and ignores normal automatic worktree creation. Sources are processed in argument order. An exact local branch wins; otherwise the value must name an owned worktree below `git.worktree_base`, whose checked-out `git.branch_prefix` branch becomes the source. The target and named sources must be clean and attached, duplicate/current sources are rejected, and no remote refs are fetched implicitly.
 
 ## Forwarding and host services
 

@@ -15,7 +15,7 @@ SOURCE_DATE_EPOCH="$(git show --no-patch --format=%ct v1.2.3)" \
 
 ## Maintainer checklist
 
-1. Update dependencies and `assets/images.lock.toml` deliberately. Verify upstream OCI digests, npm integrity, and release checksums.
+1. Update dependencies and `assets/images.lock.toml` deliberately. Verify upstream OCI digests and release checksums.
 2. Run `cargo run --locked --package xtask -- validate`, the full test suite, rustfmt, Clippy pedantic, cargo-deny, and unused-dependency checks.
 3. Build every environment and sidecar with Docker and rootless Podman on Linux amd64; inspect the resulting image, run the no-credential smoke tests, and verify that a launcher workload creates a host-owned file in a writable bind-mounted checkout.
 4. Run the platform smoke matrix below and attach its results to the release issue.
@@ -31,6 +31,6 @@ SOURCE_DATE_EPOCH="$(git show --no-patch --format=%ct v1.2.3)" \
 | macOS | Docker Desktop or OrbStack | Intel, Apple silicon |
 | macOS | Podman Machine 5.4+ | Intel, Apple silicon |
 
-For each available combination, exercise `doctor`; all four environment builds; interactive run/shell and signal propagation; UID/GID file writes; managed and direct host homes; worktree create/reuse/retain/cleanup; loopback ports; offline/allowlist/bridge/host networking; fake SSH/GPG agents; host SSH; OAuth callback; redacted secret injection; Ollama/LM Studio tunnels; and Codex `--version`, help, config/profile loading, stdio/HTTP MCP, skills, plugins, hooks, and exit-code passthrough.
+For each available combination, exercise `doctor`; all four environment builds; interactive run/shell and signal propagation; UID/GID file writes; managed and direct host homes; worktree create/reuse/retain/cleanup; merge-agent branch/worktree sources, conflict resolution, model override, dry-run, and preserved failure state; loopback ports; offline/allowlist/bridge/host networking; fake SSH/GPG agents; host SSH; OAuth callback; redacted secret injection; Ollama/LM Studio tunnels; and Codex `--version`, help, config/profile loading, stdio/HTTP MCP, skills, plugins, hooks, and exit-code passthrough.
 
 No smoke test requires paid API traffic. Authentication-dependent tests use temporary fixtures and a local HTTP/MCP service.

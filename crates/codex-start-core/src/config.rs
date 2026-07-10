@@ -10,6 +10,8 @@ use thiserror::Error;
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 /// Prefix used for nested environment overrides.
 pub const ENVIRONMENT_PREFIX: &str = "CODEX_START__";
+/// Default model used by the conflict-resolution merge agent.
+pub const DEFAULT_MERGE_MODEL: &str = "gpt-5.6-terra";
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -291,6 +293,29 @@ impl Default for GitConfig {
             worktree_base: None,
             branch_prefix: "codex/".into(),
             editor: Vec::new(),
+        }
+    }
+}
+
+/// Merge-agent settings supplied by one configuration layer.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MergePatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// Resolved conflict-resolution merge-agent settings.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeConfig {
+    pub model: String,
+}
+
+impl Default for MergeConfig {
+    fn default() -> Self {
+        Self {
+            model: DEFAULT_MERGE_MODEL.to_owned(),
         }
     }
 }
@@ -694,6 +719,8 @@ pub struct ConfigPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git: Option<GitPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge: Option<MergePatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex: Option<CodexPatch>,
@@ -732,6 +759,9 @@ impl ConfigPatch {
                 worktree_base: None,
                 branch_prefix: Some("codex/".into()),
                 editor: Some(Vec::new()),
+            }),
+            merge: Some(MergePatch {
+                model: Some(DEFAULT_MERGE_MODEL.to_owned()),
             }),
             proxy: Some(ProxyPatch {
                 listen_port: Some(3128),
@@ -908,6 +938,7 @@ pub struct EffectiveConfig {
     pub secret_refs: BTreeMap<String, String>,
     pub forwarding: ForwardingConfig,
     pub git: GitConfig,
+    pub merge: MergeConfig,
     pub proxy: ProxyConfig,
     pub codex: CodexConfig,
     pub homes: BTreeMap<String, HomeConfig>,
@@ -1325,6 +1356,7 @@ fn effective_from_patch(
         .ok_or_else(|| ConfigError::UnknownHome(home_name.clone()))?;
     let forwarding = patch.forwarding.unwrap_or_default();
     let git = patch.git.unwrap_or_default();
+    let merge = patch.merge.unwrap_or_default();
     let proxy = patch.proxy.unwrap_or_default();
     let codex = patch.codex.unwrap_or_default();
     Ok(EffectiveConfig {
@@ -1370,6 +1402,11 @@ fn effective_from_patch(
             worktree_base: git.worktree_base,
             branch_prefix: git.branch_prefix.unwrap_or_else(|| "codex/".into()),
             editor: git.editor.unwrap_or_default(),
+        },
+        merge: MergeConfig {
+            model: merge
+                .model
+                .unwrap_or_else(|| DEFAULT_MERGE_MODEL.to_owned()),
         },
         proxy: ProxyConfig {
             listen_port: proxy.listen_port.unwrap_or(3128),
@@ -1433,6 +1470,18 @@ fn validate_patch(patch: &ConfigPatch) -> Result<(), ConfigError> {
         if git.editor.as_ref().is_some_and(Vec::is_empty) {
             // An empty editor intentionally means automatic discovery.
         }
+    }
+    if patch
+        .merge
+        .as_ref()
+        .and_then(|merge| merge.model.as_ref())
+        .is_some_and(|model| {
+            model.trim().is_empty() || model.bytes().any(|byte| byte.is_ascii_control())
+        })
+    {
+        return Err(ConfigError::Invalid(
+            "merge.model cannot be empty or contain control characters".into(),
+        ));
     }
     if let Some(proxy) = &patch.proxy {
         validate_proxy_patch(proxy)?;
@@ -1905,6 +1954,7 @@ fn unknown_field_suggestion(message: &str) -> Option<String> {
         "secret_refs",
         "forwarding",
         "git",
+        "merge",
         "proxy",
         "codex",
         "extends",
@@ -1936,6 +1986,7 @@ fn unknown_field_suggestion(message: &str) -> Option<String> {
         "worktree_base",
         "branch_prefix",
         "editor",
+        "model",
         "connect_timeout_seconds",
         "listen_port",
         "idle_timeout_seconds",
@@ -2014,6 +2065,48 @@ pub enum ConfigError {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn merge_model_has_a_dedicated_default_and_normal_precedence() {
+        let default = ConfigResolver::new().resolve().expect("default config");
+        assert_eq!(default.config.merge.model, DEFAULT_MERGE_MODEL);
+
+        let mut resolver = ConfigResolver::new();
+        resolver
+            .add_layer(ConfigLayer::new(
+                ConfigLayerKind::Project,
+                "project",
+                ConfigPatch {
+                    merge: Some(MergePatch {
+                        model: Some("project-merge-model".to_owned()),
+                    }),
+                    ..ConfigPatch::default()
+                },
+            ))
+            .expect("project merge setting");
+        resolver
+            .add_layer(ConfigLayer::new(
+                ConfigLayerKind::CommandLine,
+                "command line",
+                ConfigPatch {
+                    merge: Some(MergePatch {
+                        model: Some("cli-merge-model".to_owned()),
+                    }),
+                    ..ConfigPatch::default()
+                },
+            ))
+            .expect("CLI merge setting");
+        let effective = resolver.resolve().expect("resolved merge model");
+        assert_eq!(effective.config.merge.model, "cli-merge-model");
+        assert_eq!(
+            effective
+                .provenance
+                .source_for("merge.model")
+                .map(|source| source.label.as_str()),
+            Some("command line")
+        );
+        assert!(ConfigDocument::parse("[settings.merge]\nmodel='  '\n", "bad").is_err());
+    }
 
     #[test]
     fn strict_document_reports_unknown_field_and_suggestion() {

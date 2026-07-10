@@ -10,13 +10,13 @@ use std::{
 
 use codex_start_core::{
     ConfigDocument, ConfigLayer, ConfigLayerKind, ConfigPatch, ConfigResolver, HomeConfig,
-    NetworkMode, ResolvedConfig, RuntimeKind as CoreRuntimeKind, TtyMode,
+    MergePatch, NetworkMode, ResolvedConfig, RuntimeKind as CoreRuntimeKind, TtyMode,
     WorktreeMode as CoreWorktreeMode,
 };
 use toml_edit::{DocumentMut, Item, Table};
 
 use crate::{
-    cli::{NetworkModeArg, PortProtocol, PortSpec, RunOptions},
+    cli::{MergeRunOptions, NetworkModeArg, PortProtocol, PortSpec, RunOptions},
     environments::EnvironmentCatalog,
     error::{HostError, Result},
     git::GitRepo,
@@ -308,6 +308,37 @@ pub fn patch_from_run_options(environment: Option<&str>, options: &RunOptions) -
         allow_hosts: (!options.allow_hosts.is_empty()).then(|| options.allow_hosts.clone()),
         ..ConfigPatch::default()
     }
+}
+
+/// Convert fixed-current-worktree merge options into a command-line config layer.
+pub fn patch_from_merge_options(
+    environment: Option<&str>,
+    model: Option<&str>,
+    options: &MergeRunOptions,
+) -> ConfigPatch {
+    let run_options = RunOptions {
+        name: None,
+        runtime: options.runtime,
+        runtime_program: options.runtime_program.clone(),
+        home: options.home.clone(),
+        network: options.network,
+        offline: options.offline,
+        no_network: options.no_network,
+        no_worktree: true,
+        worktree: false,
+        publish: options.publish.clone(),
+        rebuild: options.rebuild,
+        pull: options.pull,
+        no_tty: options.no_tty,
+        dry_run: options.dry_run,
+        allow_hosts: options.allow_hosts.clone(),
+        runtime_args: options.runtime_args.clone(),
+    };
+    let mut patch = patch_from_run_options(environment, &run_options);
+    patch.merge = model.map(|model| MergePatch {
+        model: Some(model.to_owned()),
+    });
+    patch
 }
 
 /// Convert a resolved core home into the host home module's representation.

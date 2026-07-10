@@ -34,25 +34,6 @@ digest = "sha256:1def178129dfb5f24db43afbf2fcac04530012e3264ba4ff81c71184e17a9ee
 [images.debian.platforms."linux/arm64"]
 digest = "sha256:675b032d19e294c9eb2525b24ee63e6dc718854a481c6fd6f5e0aefcaf8208a1"
 
-[artifacts.codex]
-kind = "npm"
-version = "0.142.5"
-url = "https://registry.npmjs.org/@openai/codex/-/codex-0.142.5.tgz"
-integrity = "sha512-WQEpD7l3k68eIAP0aq28EdR18ENBAf8DyprzFhzNwCOQJSv4nHzpwT8Fl30IJacprko2ZCmUBZjM2u941l2yLw=="
-sha512 = "5901290fb97793af1e2003f46aadbc11d475f0434101ff03ca9af3161ccdc02390252bf89c7ce9c13f05977d0825a729ae4a366429940598ccdaef78d65db22f"
-
-[artifacts.codex.platforms."linux/amd64"]
-npm_version = "0.142.5-linux-x64"
-url = "https://registry.npmjs.org/@openai/codex/-/codex-0.142.5-linux-x64.tgz"
-integrity = "sha512-pxY+d3NgNE57Y/MApD3/TZUAygxJN6I9h3ZeDUwe67mxWjUxsuapxMRFTKSznCalYbRAeZp752+AAXmUbmguEg=="
-sha512 = "a7163e777360344e7b63f300a43dff4d9500ca0c4937a23d87765e0d4c1eebb9b15a3531b2e6a9c4c4454ca4b39c26a561b440799a7be76f800179946e682e12"
-
-[artifacts.codex.platforms."linux/arm64"]
-npm_version = "0.142.5-linux-arm64"
-url = "https://registry.npmjs.org/@openai/codex/-/codex-0.142.5-linux-arm64.tgz"
-integrity = "sha512-77ka5PSnm5HdxdBT99IwntCasmbqevlS0eiC0AtEb6ZXCLkim2gm0AWm+jNYy0EhbssvNK+KghayWo34HMgXeA=="
-sha512 = "efb91ae4f4a79b91ddc5d053f7d2309ed09ab266ea7af952d1e882d00b446fa65708b9229b6826d005a6fa3358cb41216ecb2f34af8a8216b25a8df81cc81778"
-
 [artifacts.uv]
 kind = "archive"
 version = "0.11.28"

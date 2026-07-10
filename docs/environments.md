@@ -79,7 +79,7 @@ If `forwarding.host_ssh` is enabled and allowlist networking is used, the image 
 
 ## Image selection and updates
 
-`assets/images.lock.toml` records the exact base-image platform digests, Codex npm integrity, uv checksums, and toolchain versions embedded in the binary. Built-in local image tags hash the fully resolved environment, architecture, defining manifests, build context, and lock-derived arguments. The Rust egress sidecar has its own content-addressed tag derived from its Dockerfile, Cargo lock, proxy/core sources, and build arguments.
+`assets/images.lock.toml` records the exact base-image platform digests, uv checksums, and toolchain versions embedded in the binary. Built-in environment builds install the current Codex npm release; the user lock timestamp is included in their build arguments so `env update` refreshes their content-addressed tags. Built-in local image tags hash the fully resolved environment, architecture, defining manifests, build context, and lock-derived arguments. The Rust egress sidecar has its own content-addressed tag derived from its Dockerfile, Cargo lock, proxy/core sources, and build arguments.
 
 Normal behavior is:
 
