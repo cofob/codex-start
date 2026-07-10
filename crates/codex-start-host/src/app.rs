@@ -2497,9 +2497,12 @@ fn list_homes(context: &ConfigContext, output: OutputFormat) -> Result<u8> {
 
 fn execute_config(
     context: &ConfigContext,
-    command: ConfigCommand,
+    command: Option<ConfigCommand>,
     output: OutputFormat,
 ) -> Result<u8> {
+    let Some(command) = command else {
+        return crate::config_tui::run(context, output);
+    };
     match command {
         ConfigCommand::Init {
             global,

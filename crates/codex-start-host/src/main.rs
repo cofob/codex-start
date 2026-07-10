@@ -4,6 +4,7 @@ mod app;
 mod assets;
 mod cli;
 mod command;
+mod config_tui;
 mod configuration;
 mod content_hash;
 mod editor;

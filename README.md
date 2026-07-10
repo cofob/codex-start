@@ -83,6 +83,8 @@ Normal runs reuse content-addressed local builds. `--pull` fetches versioned bui
 
 Global settings live at `~/.config/codex-start/config.toml`. A Git repository stores private shared defaults in `<git-common-dir>/codex-start.toml`; a non-Git project uses a canonical-path hash below `~/.config/codex-start/projects`. Ordinary launches never write settings.
 
+Run `codex-start config` in a terminal for a guided editor of common project or global settings. It shows each layer's explicit value alongside the effective value and source, stages changes until confirmation, and offers `inherit` to remove an override. Advanced settings remain available through `codex-start config edit` and typed updates through `codex-start config set`.
+
 ```toml
 schema_version = 1
 

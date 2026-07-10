@@ -22,6 +22,7 @@ blake3 = "1.8"
 bytes = "1.10"
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 directories = "6.0"
+dialoguer = { version = "0.12", default-features = false }
 fs2 = "0.4"
 flate2 = "1.1"
 futures = "0.3"

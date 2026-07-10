@@ -18,6 +18,7 @@ blake3.workspace = true
 clap.workspace = true
 codex-start-core = { version = "0.1.0", path = "../codex-start-core" }
 codex-start-proxy = { version = "0.1.0", path = "../codex-start-proxy" }
+dialoguer.workspace = true
 fs2.workspace = true
 secrecy.workspace = true
 serde.workspace = true

@@ -18,6 +18,8 @@ The global document is `$XDG_CONFIG_HOME/codex-start/config.toml` (normally `~/.
 
 `codex-start config show` prints the merged, redacted value. `codex-start config explain` reports the layer that supplied every value. Launches never create or rewrite settings; use `config init` or `config set` to persist them.
 
+Bare `codex-start config` opens an interactive project/global editor when stdin and stderr are terminals and human output is selected. It covers environment, runtime, network, worktree, home, TTY, and rebuild settings. Each choice can be made explicit or reset to `inherit`; edits are staged and the selected document is atomically updated only after Save confirmation. Use `config edit` for advanced tables and `config set` for scripts or other non-interactive use.
+
 The schema-validated global example is [examples/config.toml](examples/config.toml), and a valid project-only document is [examples/project.toml](examples/project.toml).
 
 ## Documents and launcher settings

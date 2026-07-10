@@ -59,7 +59,7 @@ pub enum Command {
     Env(EnvironmentArgs),
     /// Manage shared Codex homes.
     Home(HomeArgs),
-    /// Create, inspect, and edit codex-start configuration.
+    /// Open the interactive editor or inspect and edit configuration directly.
     Config(ConfigArgs),
     /// Diagnose host, runtime, image, and Codex compatibility.
     Doctor(DoctorArgs),
@@ -405,9 +405,9 @@ pub enum HomeCommand {
 /// Configuration command group.
 #[derive(Clone, Debug, Args)]
 pub struct ConfigArgs {
-    /// Configuration operation.
+    /// Configuration operation; omit to open the interactive editor.
     #[command(subcommand)]
-    pub command: ConfigCommand,
+    pub command: Option<ConfigCommand>,
 }
 
 /// Configuration operations.
@@ -671,6 +671,23 @@ mod tests {
         ));
         assert!(Cli::try_parse_from(["codex-start", "merge"]).is_err());
         assert!(Cli::try_parse_from(["codex-start", "merge", "--worktree", "feature"]).is_err());
+    }
+
+    #[test]
+    fn bare_config_opens_interactive_editor_and_subcommands_still_parse() {
+        let interactive =
+            Cli::try_parse_from(["codex-start", "config"]).expect("interactive config parse");
+        assert!(matches!(
+            interactive.command,
+            Some(Command::Config(args)) if args.command.is_none()
+        ));
+
+        let set = Cli::try_parse_from(["codex-start", "config", "set", "network", "\"offline\""])
+            .expect("config set parse");
+        assert!(matches!(
+            set.command,
+            Some(Command::Config(args)) if args.command.is_some()
+        ));
     }
 
     #[cfg(unix)]

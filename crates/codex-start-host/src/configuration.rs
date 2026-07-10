@@ -13,7 +13,7 @@ use codex_start_core::{
     MergePatch, NetworkMode, ResolvedConfig, RuntimeKind as CoreRuntimeKind, TtyMode,
     WorktreeMode as CoreWorktreeMode,
 };
-use toml_edit::{DocumentMut, Item, Table};
+use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::{
     cli::{MergeRunOptions, NetworkModeArg, PortProtocol, PortSpec, RunOptions},
@@ -38,6 +38,93 @@ pub struct ConfigContext {
     pub global_file: PathBuf,
     /// Private project settings file.
     pub project_file: PathBuf,
+}
+
+/// Persistent configuration layer edited by the interactive configuration command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigTarget {
+    /// Settings private to the current project.
+    Project,
+    /// User-wide settings and definitions.
+    Global,
+}
+
+impl ConfigTarget {
+    /// Human-readable target name.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Global => "global",
+        }
+    }
+
+    const fn is_global(self) -> bool {
+        matches!(self, Self::Global)
+    }
+}
+
+/// Common launcher settings supported by the interactive editor.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CommonSettings {
+    pub environment: Option<String>,
+    pub runtime: Option<CoreRuntimeKind>,
+    pub network: Option<NetworkMode>,
+    pub worktree: Option<CoreWorktreeMode>,
+    pub home: Option<String>,
+    pub tty: Option<TtyMode>,
+    pub rebuild: Option<bool>,
+}
+
+impl From<&ConfigPatch> for CommonSettings {
+    fn from(patch: &ConfigPatch) -> Self {
+        Self {
+            environment: patch.environment.clone(),
+            runtime: patch.runtime,
+            network: patch.network,
+            worktree: patch.worktree,
+            home: patch.home.clone(),
+            tty: patch.tty,
+            rebuild: patch.rebuild,
+        }
+    }
+}
+
+/// In-memory edit session for one global or project document.
+#[derive(Clone, Debug)]
+pub struct ConfigDraft {
+    target: ConfigTarget,
+    path: PathBuf,
+    original: Option<String>,
+    document: DocumentMut,
+    initial: CommonSettings,
+    settings: CommonSettings,
+}
+
+impl ConfigDraft {
+    #[must_use]
+    pub const fn target(&self) -> ConfigTarget {
+        self.target
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[must_use]
+    pub const fn settings(&self) -> &CommonSettings {
+        &self.settings
+    }
+
+    pub const fn settings_mut(&mut self) -> &mut CommonSettings {
+        &mut self.settings
+    }
+
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.settings != self.initial
+    }
 }
 
 impl ConfigContext {
@@ -68,6 +155,65 @@ impl ConfigContext {
         self.repo
             .as_ref()
             .map_or(self.cwd.as_path(), |repo| repo.root.as_path())
+    }
+
+    /// Path associated with one editable persistent layer.
+    #[must_use]
+    pub fn config_path(&self, target: ConfigTarget) -> &Path {
+        match target {
+            ConfigTarget::Project => &self.project_file,
+            ConfigTarget::Global => &self.global_file,
+        }
+    }
+
+    /// Load one persistent layer without creating or rewriting it.
+    pub fn load_common_settings(&self, target: ConfigTarget) -> Result<ConfigDraft> {
+        let path = self.config_path(target);
+        let original = read_optional_text(path)?;
+        let contents = original.as_deref().unwrap_or("schema_version = 1\n");
+        let document = contents
+            .parse::<DocumentMut>()
+            .map_err(|error| HostError::Config(format!("{}: {error}", path.display())))?;
+        let parsed = ConfigDocument::parse_file(path, contents).map_err(config_error)?;
+        if !target.is_global() {
+            parsed.validate_as_project().map_err(config_error)?;
+        }
+        let settings = CommonSettings::from(&parsed.settings);
+        Ok(ConfigDraft {
+            target,
+            path: path.to_path_buf(),
+            original,
+            document,
+            initial: settings.clone(),
+            settings,
+        })
+    }
+
+    /// Validate and atomically persist the changed common settings in one write.
+    pub fn save_common_settings(&self, mut draft: ConfigDraft) -> Result<Option<PathBuf>> {
+        if draft.path != self.config_path(draft.target) {
+            return Err(HostError::Config(
+                "configuration draft does not belong to this invocation".to_owned(),
+            ));
+        }
+        if !draft.is_dirty() {
+            return Ok(None);
+        }
+        if read_optional_text(&draft.path)? != draft.original {
+            return Err(HostError::Config(format!(
+                "{} changed while the interactive editor was open; reload it and try again",
+                draft.path.display()
+            )));
+        }
+
+        apply_common_settings(&mut draft)?;
+        let rendered = draft.document.to_string();
+        let parsed = ConfigDocument::parse_file(&draft.path, &rendered).map_err(config_error)?;
+        if !draft.target.is_global() {
+            parsed.validate_as_project().map_err(config_error)?;
+        }
+        atomic_write(&draft.path, &rendered)?;
+        Ok(Some(draft.path))
     }
 
     /// Resolve every persistent layer, environment override, and CLI patch.
@@ -247,6 +393,138 @@ impl ConfigContext {
     }
 }
 
+fn read_optional_text(path: &Path) -> Result<Option<String>> {
+    if ensure_regular_file_or_missing(path)? {
+        fs::read_to_string(path)
+            .map(Some)
+            .map_err(|source| HostError::io(path, source))
+    } else {
+        Ok(None)
+    }
+}
+
+fn apply_common_settings(draft: &mut ConfigDraft) -> Result<()> {
+    if draft.settings.environment != draft.initial.environment {
+        update_setting(
+            &mut draft.document,
+            "environment",
+            draft.settings.environment.as_deref().map(value),
+        )?;
+    }
+    if draft.settings.runtime != draft.initial.runtime {
+        update_setting(
+            &mut draft.document,
+            "runtime",
+            draft
+                .settings
+                .runtime
+                .map(|setting| value(runtime_name(setting))),
+        )?;
+    }
+    if draft.settings.network != draft.initial.network {
+        update_setting(
+            &mut draft.document,
+            "network",
+            draft
+                .settings
+                .network
+                .map(|setting| value(network_name(setting))),
+        )?;
+    }
+    if draft.settings.worktree != draft.initial.worktree {
+        update_setting(
+            &mut draft.document,
+            "worktree",
+            draft
+                .settings
+                .worktree
+                .map(|setting| value(worktree_name(setting))),
+        )?;
+    }
+    if draft.settings.home != draft.initial.home {
+        update_setting(
+            &mut draft.document,
+            "home",
+            draft.settings.home.as_deref().map(value),
+        )?;
+    }
+    if draft.settings.tty != draft.initial.tty {
+        update_setting(
+            &mut draft.document,
+            "tty",
+            draft.settings.tty.map(|setting| value(tty_name(setting))),
+        )?;
+    }
+    if draft.settings.rebuild != draft.initial.rebuild {
+        update_setting(
+            &mut draft.document,
+            "rebuild",
+            draft.settings.rebuild.map(value),
+        )?;
+    }
+    Ok(())
+}
+
+fn update_setting(document: &mut DocumentMut, key: &str, item: Option<Item>) -> Result<()> {
+    if item.is_none() && document.get("settings").is_none() {
+        return Ok(());
+    }
+    if document.get("settings").is_none() {
+        document.insert("settings", Item::Table(Table::new()));
+    }
+    let settings = document
+        .get_mut("settings")
+        .and_then(Item::as_table_like_mut)
+        .ok_or_else(|| HostError::Config("`settings` is not a TOML table".to_owned()))?;
+    if let Some(mut item) = item {
+        if let Some(existing) = settings.get_mut(key) {
+            if let (Some(existing), Some(replacement)) = (existing.as_value(), item.as_value_mut())
+            {
+                replacement.decor_mut().clone_from(existing.decor());
+            }
+            *existing = item;
+        } else {
+            settings.insert(key, item);
+        }
+    } else {
+        settings.remove(key);
+    }
+    Ok(())
+}
+
+const fn runtime_name(value: CoreRuntimeKind) -> &'static str {
+    match value {
+        CoreRuntimeKind::Auto => "auto",
+        CoreRuntimeKind::Docker => "docker",
+        CoreRuntimeKind::Podman => "podman",
+    }
+}
+
+const fn network_name(value: NetworkMode) -> &'static str {
+    match value {
+        NetworkMode::Offline => "offline",
+        NetworkMode::Allowlist => "allowlist",
+        NetworkMode::Bridge => "bridge",
+        NetworkMode::Host => "host",
+    }
+}
+
+const fn worktree_name(value: CoreWorktreeMode) -> &'static str {
+    match value {
+        CoreWorktreeMode::Auto => "auto",
+        CoreWorktreeMode::Always => "always",
+        CoreWorktreeMode::Never => "never",
+    }
+}
+
+const fn tty_name(value: TtyMode) -> &'static str {
+    match value {
+        TtyMode::Auto => "auto",
+        TtyMode::Always => "always",
+        TtyMode::Never => "never",
+    }
+}
+
 fn environment_overrides(
     values: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Result<Vec<(String, String)>> {
@@ -407,9 +685,9 @@ fn config_error(error: impl std::fmt::Display) -> HostError {
 mod tests {
     use std::fs;
 
-    use codex_start_core::{ConfigLayerKind, ConfigPatch, HomeConfig};
+    use codex_start_core::{ConfigLayerKind, ConfigPatch, HomeConfig, NetworkMode, RuntimeKind};
 
-    use super::{ConfigContext, environment_overrides};
+    use super::{ConfigContext, ConfigTarget, environment_overrides};
 
     #[test]
     fn set_validates_and_writes_project_document() {
@@ -430,6 +708,133 @@ mod tests {
         context.set(false, "network", "\"offline\"").expect("set");
         let value = fs::read_to_string(&context.project_file).expect("read");
         assert!(value.contains("network = \"offline\""));
+    }
+
+    #[test]
+    fn common_settings_save_preserves_unrelated_toml_and_supports_inherit() {
+        let root = tempfile::tempdir().expect("root");
+        let paths = crate::paths::AppPaths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            cache: root.path().join("cache"),
+        };
+        paths.ensure().expect("paths");
+        let context = ConfigContext {
+            global_file: paths.config_file(),
+            project_file: root.path().join("project.toml"),
+            cwd: root.path().to_path_buf(),
+            repo: None,
+            paths,
+        };
+        fs::write(
+            &context.global_file,
+            r#"schema_version = 1
+
+[settings]
+runtime = "auto"
+network = "allowlist" # retain this explanation
+
+[settings.codex.config]
+future_option = "untouched"
+
+[profiles.review.settings]
+network = "bridge"
+"#,
+        )
+        .expect("global config");
+
+        let mut draft = context
+            .load_common_settings(ConfigTarget::Global)
+            .expect("load draft");
+        draft.settings_mut().runtime = None;
+        draft.settings_mut().network = Some(NetworkMode::Offline);
+        context
+            .save_common_settings(draft)
+            .expect("save draft")
+            .expect("updated path");
+
+        let contents = fs::read_to_string(&context.global_file).expect("saved global config");
+        assert!(!contents.contains("runtime ="));
+        assert!(contents.contains("network = \"offline\" # retain this explanation"));
+        assert!(contents.contains("future_option = \"untouched\""));
+        assert!(contents.contains("[profiles.review.settings]"));
+    }
+
+    #[test]
+    fn common_settings_draft_creates_only_after_a_real_save() {
+        let root = tempfile::tempdir().expect("root");
+        let paths = crate::paths::AppPaths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            cache: root.path().join("cache"),
+        };
+        paths.ensure().expect("paths");
+        let context = ConfigContext {
+            global_file: paths.config_file(),
+            project_file: root.path().join("project.toml"),
+            cwd: root.path().to_path_buf(),
+            repo: None,
+            paths,
+        };
+
+        let unchanged = context
+            .load_common_settings(ConfigTarget::Project)
+            .expect("unchanged draft");
+        assert!(
+            context
+                .save_common_settings(unchanged)
+                .expect("unchanged save")
+                .is_none()
+        );
+        assert!(!context.project_file.exists());
+
+        let mut changed = context
+            .load_common_settings(ConfigTarget::Project)
+            .expect("changed draft");
+        changed.settings_mut().runtime = Some(RuntimeKind::Docker);
+        context
+            .save_common_settings(changed)
+            .expect("changed save")
+            .expect("created path");
+        let contents = fs::read_to_string(&context.project_file).expect("created project config");
+        assert!(contents.starts_with("schema_version = 1"));
+        assert!(contents.contains("runtime = \"docker\""));
+    }
+
+    #[test]
+    fn common_settings_save_rejects_concurrent_file_changes() {
+        let root = tempfile::tempdir().expect("root");
+        let paths = crate::paths::AppPaths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            cache: root.path().join("cache"),
+        };
+        paths.ensure().expect("paths");
+        let context = ConfigContext {
+            global_file: paths.config_file(),
+            project_file: root.path().join("project.toml"),
+            cwd: root.path().to_path_buf(),
+            repo: None,
+            paths,
+        };
+        fs::write(&context.project_file, "schema_version = 1\n").expect("initial config");
+        let mut draft = context
+            .load_common_settings(ConfigTarget::Project)
+            .expect("draft");
+        draft.settings_mut().network = Some(NetworkMode::Offline);
+        fs::write(
+            &context.project_file,
+            "schema_version = 1\n\n[settings]\nrebuild = true\n",
+        )
+        .expect("external edit");
+
+        let error = context
+            .save_common_settings(draft)
+            .expect_err("concurrent change must fail");
+        assert!(error.to_string().contains("changed while"));
+        let contents = fs::read_to_string(&context.project_file).expect("external edit retained");
+        assert!(contents.contains("rebuild = true"));
+        assert!(!contents.contains("network"));
     }
 
     #[test]
