@@ -50,6 +50,7 @@ COPY --from=helper-builder /source/target/release/codex-start-init /usr/local/bi
 COPY --from=helper-builder /source/target/release/codex-start-host-ssh /usr/local/bin/codex-start-host-ssh
 COPY --from=helper-builder /source/target/release/codex-start-ssh /usr/local/bin/ssh
 COPY --from=helper-builder /source/target/release/codex-start-sidecar /usr/local/bin/codex-start-sidecar
+COPY images/environment/login-path.sh /etc/profile.d/codex-start-path.sh
 WORKDIR /workspaces
 ENTRYPOINT ["/usr/local/bin/codex-start-init", "run", "--"]
 CMD ["codex"]
@@ -147,6 +148,7 @@ COPY --from=helper-builder /source/target/release/codex-start-init /usr/local/bi
 COPY --from=helper-builder /source/target/release/codex-start-host-ssh /usr/local/bin/codex-start-host-ssh
 COPY --from=helper-builder /source/target/release/codex-start-ssh /usr/local/bin/ssh
 COPY --from=helper-builder /source/target/release/codex-start-sidecar /usr/local/bin/codex-start-sidecar
+COPY images/environment/login-path.sh /etc/profile.d/codex-start-path.sh
 WORKDIR /workspaces
 ENTRYPOINT ["/usr/local/bin/codex-start-init", "run", "--"]
 CMD ["codex"]
