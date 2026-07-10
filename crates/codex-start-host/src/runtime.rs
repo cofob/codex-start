@@ -1435,14 +1435,17 @@ mod tests {
         net::Ipv4Addr,
         os::unix::ffi::{OsStrExt, OsStringExt},
         os::unix::fs::PermissionsExt,
-        path::PathBuf,
+        path::{Path, PathBuf},
     };
 
     use super::{
         BuildRequest, MountKind, MountRequest, PublishRequest, RunRequest, Runtime, RuntimeKind,
         WorkloadIdentityMode, help_has_option, identity_option, parse_runtime_version,
     };
-    use crate::command::IoMode;
+    use crate::{
+        command::IoMode,
+        error::{HostError, Result},
+    };
 
     const ALL_REQUIRED_OPTIONS: &str = "--add-host --cap-add --cap-drop --label --mount --network \
         --network-alias --read-only --security-opt --userns --internal --alias --filter --format";
@@ -1584,7 +1587,7 @@ mod tests {
     #[test]
     fn mocked_adapter_accepts_required_cli_surface_and_structured_info() {
         let (root, executable) = fake_runtime(ALL_REQUIRED_OPTIONS);
-        let runtime = Runtime::detect(RuntimeKind::Docker, Some(executable.as_os_str())).unwrap();
+        let runtime = detect_fake_runtime(RuntimeKind::Docker, &executable).unwrap();
         assert_eq!(runtime.capability_report().unwrap().checked_options(), 18);
         let details = runtime.details().unwrap();
         assert_eq!(details.server_version, "29.0.0");
@@ -1596,7 +1599,7 @@ mod tests {
     fn mocked_adapter_reports_the_operation_and_missing_option() {
         let options = ALL_REQUIRED_OPTIONS.replace("--mount", "");
         let (_root, executable) = fake_runtime(&options);
-        let error = Runtime::detect(RuntimeKind::Docker, Some(executable.as_os_str()))
+        let error = detect_fake_runtime(RuntimeKind::Docker, &executable)
             .expect_err("missing mount support must fail");
         let message = error.to_string();
         assert!(message.contains("container run"));
@@ -1607,7 +1610,7 @@ mod tests {
     #[test]
     fn local_rootless_podman_keeps_host_id_while_starting_init_as_root() {
         let (root, executable) = fake_podman(true, false);
-        let runtime = Runtime::detect(RuntimeKind::Podman, Some(executable.as_os_str())).unwrap();
+        let runtime = detect_fake_runtime(RuntimeKind::Podman, &executable).unwrap();
         let mut request = RunRequest {
             name: "codex-rootless".to_owned(),
             image: "example/image:locked".to_owned(),
@@ -1647,7 +1650,7 @@ mod tests {
     #[test]
     fn rootful_podman_retains_engine_identity_defaults() {
         let (root, executable) = fake_podman(false, false);
-        let runtime = Runtime::detect(RuntimeKind::Podman, Some(executable.as_os_str())).unwrap();
+        let runtime = detect_fake_runtime(RuntimeKind::Podman, &executable).unwrap();
         let mut request = RunRequest {
             name: "codex-default".to_owned(),
             image: "example/image:locked".to_owned(),
@@ -1667,7 +1670,7 @@ mod tests {
     #[test]
     fn remote_rootless_podman_maps_service_user_to_client_workload_id() {
         let (root, executable) = fake_podman(true, true);
-        let runtime = Runtime::detect(RuntimeKind::Podman, Some(executable.as_os_str())).unwrap();
+        let runtime = detect_fake_runtime(RuntimeKind::Podman, &executable).unwrap();
         let mut request = RunRequest {
             name: "codex-remote".to_owned(),
             image: "example/image:locked".to_owned(),
@@ -1690,7 +1693,7 @@ mod tests {
     #[test]
     fn rootless_podman_rejects_identity_overrides_that_break_init() {
         let (root, executable) = fake_podman(true, false);
-        let runtime = Runtime::detect(RuntimeKind::Podman, Some(executable.as_os_str())).unwrap();
+        let runtime = detect_fake_runtime(RuntimeKind::Podman, &executable).unwrap();
         for arguments in [
             vec![OsString::from("--userns=host")],
             vec![OsString::from("--user"), OsString::from("1000")],
@@ -1830,8 +1833,7 @@ mod tests {
              case \"$*\" in *--help*) echo '{help}'; exit 0;; esac\n\
              exit 1\n"
         );
-        fs::write(&executable, script).unwrap();
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        write_fake_executable(&executable, script.as_bytes());
         (root, executable)
     }
 
@@ -1845,9 +1847,29 @@ mod tests {
              case \"$*\" in *--help*) echo '{ALL_REQUIRED_OPTIONS}'; exit 0;; esac\n\
              exit 1\n"
         );
-        fs::write(&executable, script).unwrap();
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        write_fake_executable(&executable, script.as_bytes());
         (root, executable)
+    }
+
+    fn write_fake_executable(executable: &Path, contents: &[u8]) {
+        let pending = executable.with_extension("pending");
+        fs::write(&pending, contents).unwrap();
+        fs::set_permissions(&pending, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::rename(pending, executable).unwrap();
+    }
+
+    fn detect_fake_runtime(kind: RuntimeKind, executable: &Path) -> Result<Runtime> {
+        for attempt in 0..10 {
+            match Runtime::detect(kind, Some(executable.as_os_str())) {
+                Err(HostError::CommandIo { source, .. })
+                    if source.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 9 =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+        unreachable!("fake runtime retry loop must return")
     }
 }
 
