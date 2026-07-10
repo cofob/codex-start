@@ -658,7 +658,7 @@ jobs:
           for _ in $(seq 1 60); do
             container="$(docker ps --quiet \
               --filter label=io.codex-start.managed=true \
-              --filter label=io.codex-start.role=workload | head -n 1)"
+              --filter label=io.codex-start.role=workload | sed -n '1p')"
             [[ -z "${container}" ]] || break
             sleep 0.5
           done

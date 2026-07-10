@@ -289,7 +289,6 @@ jobs:
 
   promote:
     name: Promote verified ${{ matrix.name }} image
-    if: inputs.release_tag == ''
     needs: images
     runs-on: ubuntu-24.04
     strategy:
@@ -307,20 +306,34 @@ jobs:
         with:
           name: image-promotion-${{ matrix.name }}
           path: promotion
-      - name: Publish edge and commit tags after every image gate passes
+      - name: Publish verified tags after every image gate passes
         shell: bash
         env:
           RECORD: promotion/image-promotion-${{ matrix.name }}.json
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           image="$(jq -r .image "${RECORD}")"
           digest="$(jq -r .digest "${RECORD}")"
           existing="$(jq -r .existing "${RECORD}")"
+          record_release="$(jq -r .release_tag "${RECORD}")"
+          test "${record_release}" = "${RELEASE_TAG}"
           [[ "${existing}" == false ]] || exit 0
           jq -r '.tags | split("\n")[]' "${RECORD}" | while IFS= read -r tag; do
             [[ -n "${tag}" ]] || continue
+            if [[ -n "${RELEASE_TAG}" ]]; then
+              if inspection="$(docker buildx imagetools inspect "${tag}" 2>&1)"; then
+                echo "refusing to overwrite immutable release image ${tag}" >&2
+                exit 1
+              elif [[ "${inspection}" != *"not found"* \
+                && "${inspection}" != *"manifest unknown"* ]]; then
+                printf '%s\n' "${inspection}" >&2
+                echo "could not prove immutable tag ${tag} is absent" >&2
+                exit 1
+              fi
+            fi
             docker buildx imagetools create --tag "${tag}" "${image}@${digest}"
             promoted="$(docker buildx imagetools inspect "${tag}" \
-              | awk '$1 == "Digest:" { print $2; exit }')"
+              | awk '$1 == "Digest:" && !found { print $2; found = 1 }')"
             test "${promoted}" = "${digest}"
           done

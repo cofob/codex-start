@@ -338,7 +338,6 @@ jobs:
       attestations: write
       contents: write
       id-token: write
-      packages: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -355,11 +354,6 @@ jobs:
         with:
           path: dist
           pattern: release-package-*
-          merge-multiple: true
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          path: image-promotions
-          pattern: image-promotion-*
           merge-multiple: true
       - name: Add installer entrypoints
         run: cp install.sh install.ps1 dist/
@@ -444,48 +438,6 @@ jobs:
             echo "could not prove that release ${RELEASE_TAG} is absent or still a draft" >&2
             exit 1
           fi
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Promote all verified image indexes at the release barrier
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          records=(image-promotions/image-promotion-*.json)
-          if [[ "${#records[@]}" -ne 5 ]]; then
-            echo "expected five verified image promotion records" >&2
-            exit 1
-          fi
-          for record in "${records[@]}"; do
-            image="$(jq -r .image "${record}")"
-            digest="$(jq -r .digest "${record}")"
-            existing="$(jq -r .existing "${record}")"
-            record_release="$(jq -r .release_tag "${record}")"
-            test "${record_release}" = "${RELEASE_TAG}"
-            [[ "${existing}" == false ]] || continue
-            jq -r '.tags | split("\n")[]' "${record}" | while IFS= read -r tag; do
-              [[ -n "${tag}" ]] || continue
-              if inspection="$(docker buildx imagetools inspect "${tag}" 2>&1)"; then
-                echo "refusing to overwrite immutable release image ${tag}" >&2
-                exit 1
-              elif [[ "${inspection}" != *"not found"* \
-                && "${inspection}" != *"manifest unknown"* ]]; then
-                printf '%s\n' "${inspection}" >&2
-                echo "could not prove immutable tag ${tag} is absent" >&2
-                exit 1
-              fi
-              docker buildx imagetools create --tag "${tag}" "${image}@${digest}"
-              promoted="$(docker buildx imagetools inspect "${tag}" \
-                | awk '$1 == "Digest:" { print $2; exit }')"
-              test "${promoted}" = "${digest}"
-            done
-          done
       - name: Upload every asset to a hidden draft release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
