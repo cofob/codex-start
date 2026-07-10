@@ -1,0 +1,73 @@
+schema_version = 1
+name = "uv"
+description = "Python project environment with a fresh uv-managed virtual environment on every run"
+extends = "generic"
+workdir = "/workspaces"
+user = "codex"
+markers = ["pyproject.toml"]
+allow_hosts = [
+  "openai.com",
+  "api.openai.com",
+  "auth.openai.com",
+  "chatgpt.com",
+  "*.chatgpt.com",
+  "*.openai.com",
+  "*.oaistatic.com",
+  "*.oaiusercontent.com",
+  "api.deepseek.com",
+  "deb.debian.org",
+  "security.debian.org",
+  "github.com",
+  "api.github.com",
+  "*.github.com",
+  "raw.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+  "registry.npmjs.org",
+  "*.npmjs.org",
+  "pypi.org",
+  "*.pypi.org",
+  "files.pythonhosted.org",
+  "*.pythonhosted.org",
+  "pypi.python.org",
+  "releases.astral.sh",
+]
+
+[build]
+context = "../.."
+dockerfile = "images/environment/Dockerfile"
+target = "uv"
+
+[build.args]
+NODE_IMAGE = "docker.io/library/node:24.14.1-bookworm-slim@sha256:b506e7321f176aae77317f99d67a24b272c1f09f1d10f1761f2773447d8da26c"
+RUST_IMAGE = "docker.io/library/rust:1.97.0-bookworm@sha256:7d0723df719e7f213b69dc7c8c595985c3f4b060cfbee4f7bc0e347a86fe3b6a"
+CODEX_VERSION = "0.142.5"
+CODEX_SHA512 = "5901290fb97793af1e2003f46aadbc11d475f0434101ff03ca9af3161ccdc02390252bf89c7ce9c13f05977d0825a729ae4a366429940598ccdaef78d65db22f"
+UV_VERSION = "0.11.28"
+JUST_VERSION = "1.55.1"
+UV_SHA256_AMD64 = "e490a6464492183c5d4534a5527fb4440f7f2bb2f228162ad7e4afe076dc0224"
+UV_SHA256_ARM64 = "03e9fe0a81b0718d0bc84625de3885df6cc3f89a8b6af6121d6b9f6113fb6533"
+JUST_SHA256_AMD64 = "b0ef600f0df20d5ae91ae931627c499fc52b477ffe5f5ea7b7b3ec616b16c778"
+JUST_SHA256_ARM64 = "b0ee814c9656427408e339893541e30d9027828686839499b2a2a34dd61ad173"
+
+[env]
+UV_CACHE_DIR = "/home/codex/.cache/uv"
+UV_PYTHON_CACHE_DIR = "/home/codex/.cache/uv/python"
+UV_PROJECT_ENVIRONMENT = "/home/codex/.venv"
+UV_TOOL_BIN_DIR = "/home/codex/.local/bin"
+UV_TOOL_DIR = "/home/codex/.local/share/uv/tools"
+UV_LINK_MODE = "copy"
+PATH = "/home/codex/.venv/bin:/home/codex/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+[[prepare]]
+program = "uv"
+args = ["sync", "--all-packages", "--all-groups", "--quiet"]
+
+[[caches]]
+id = "uv"
+target = "/home/codex/.cache/uv"
+scope = "project"
+
+[[caches]]
+id = "virtualenv"
+target = "/home/codex/.venv"
+scope = "run"

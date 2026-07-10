@@ -1,0 +1,59 @@
+schema_version = 1
+name = "generic"
+description = "General-purpose Codex environment with Node.js 24, Python, GitHub CLI, and native build tools"
+workdir = "/workspaces"
+user = "codex"
+markers = []
+allow_hosts = [
+  "openai.com",
+  "api.openai.com",
+  "auth.openai.com",
+  "chatgpt.com",
+  "*.chatgpt.com",
+  "*.openai.com",
+  "*.oaistatic.com",
+  "*.oaiusercontent.com",
+  "api.deepseek.com",
+  "deb.debian.org",
+  "security.debian.org",
+  "github.com",
+  "api.github.com",
+  "*.github.com",
+  "raw.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+  "registry.npmjs.org",
+  "*.npmjs.org",
+  "pypi.org",
+  "*.pypi.org",
+  "files.pythonhosted.org",
+  "*.pythonhosted.org",
+  "pypi.python.org",
+  "releases.astral.sh",
+]
+
+[build]
+context = "../.."
+dockerfile = "images/environment/Dockerfile"
+target = "generic"
+
+[build.args]
+NODE_IMAGE = "docker.io/library/node:24.14.1-bookworm-slim@sha256:b506e7321f176aae77317f99d67a24b272c1f09f1d10f1761f2773447d8da26c"
+RUST_IMAGE = "docker.io/library/rust:1.97.0-bookworm@sha256:7d0723df719e7f213b69dc7c8c595985c3f4b060cfbee4f7bc0e347a86fe3b6a"
+CODEX_VERSION = "0.142.5"
+CODEX_SHA512 = "5901290fb97793af1e2003f46aadbc11d475f0434101ff03ca9af3161ccdc02390252bf89c7ce9c13f05977d0825a729ae4a366429940598ccdaef78d65db22f"
+
+[env]
+HOME = "/home/codex"
+GH_CONFIG_DIR = "/home/codex/.config/gh"
+NPM_CONFIG_CACHE = "/home/codex/.cache/npm"
+NPM_CONFIG_PREFIX = "/home/codex/.local"
+
+[[caches]]
+id = "npm"
+target = "/home/codex/.cache/npm"
+scope = "shared"
+
+[[caches]]
+id = "github-cli"
+target = "/home/codex/.config/gh"
+scope = "shared"

@@ -1,0 +1,59 @@
+schema_version = 1
+name = "full-stack"
+description = "A project-specific environment derived from the built-in web image"
+extends = "web"
+workdir = "/workspaces"
+user = "codex"
+markers = ["package.json", "compose.yaml"]
+allow_hosts = ["registry.npmjs.org", "*.npmjs.org", "api.example.test"]
+
+[build]
+# This Dockerfile must provide /usr/local/bin/codex-start-init from the same
+# codex-start release; the default host-SSH integration also needs
+# /usr/local/bin/codex-start-host-ssh.
+# A prebuilt manifest would use `image = "registry.example.test/team/codex:1.4.2"`
+# instead of [build]; untagged and `latest` references are rejected.
+context = "/absolute/path/to/image-context"
+dockerfile = "Dockerfile"
+target = "development"
+
+[build.args]
+RUNTIME_VERSION = "24.14.1"
+
+[env]
+NODE_ENV = "development"
+
+# Provider names are resolved from the global configuration at launch.
+[secret_refs]
+EXAMPLE_API_TOKEN = "team-api"
+
+[[prepare]]
+program = "npm"
+args = ["install", "--ignore-scripts"]
+
+[[mounts]]
+id = "project-fixtures"
+source = "/absolute/path/to/fixtures"
+target = "/fixtures"
+kind = "bind"
+read_only = true
+
+[[caches]]
+id = "package-manager"
+target = "/home/codex/.cache/npm"
+scope = "project"
+
+[[ports]]
+id = "application"
+container = 3000
+host = 3000
+host_ip = "127.0.0.1"
+protocol = "tcp"
+
+[[host_services]]
+id = "local-database"
+host = "host.containers.internal"
+port = 5432
+container_host = "database.host"
+container_port = 5432
+allow_private = true

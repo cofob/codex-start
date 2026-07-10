@@ -1,0 +1,94 @@
+schema_version = 1
+
+[settings]
+environment = "generic"
+runtime = "auto"
+network = "allowlist"
+worktree = "auto"
+home = "default"
+tty = "auto"
+publish = []
+allow_hosts = ["docs.rs"]
+allow_ssh_hosts = ["github.com:22", "ssh.github.com:443"]
+
+[settings.forwarding]
+ssh_agent = true
+ssh_agent_bridge = "auto"
+gpg_agent = true
+git_config = true
+known_hosts = true
+host_ssh = true
+gh_config = true
+browser = true
+local_providers = true
+git_config_file = "~/.gitconfig"
+known_hosts_file = "~/.ssh/known_hosts"
+container_ssh_dir = "/home/codex/.ssh"
+ssh_user = "git"
+browser_opener = []
+host_ssh_program = "ssh"
+oauth_callback_port = 1455
+
+[settings.git]
+branch_prefix = "codex/"
+editor = ["code", "--reuse-window", "{path}"]
+
+[settings.proxy]
+listen_port = 3128
+connect_timeout_seconds = 10
+idle_timeout_seconds = 300
+max_connections = 256
+block_private_addresses = true
+header_timeout_seconds = 10
+max_header_bytes = 65536
+handshake_timeout_seconds = 5
+
+[settings.codex]
+profile = "container"
+args = []
+
+[settings.codex.config]
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+approval_policy = "on-request"
+sandbox_mode = "danger-full-access"
+
+[settings.codex.config.mcp_servers.github]
+url = "https://api.githubcopilot.com/mcp/"
+bearer_token_env_var = "GITHUB_TOKEN"
+
+[profiles.offline.settings]
+network = "offline"
+
+[profiles.direct.settings]
+network = "bridge"
+worktree = "never"
+
+[homes.default]
+kind = "managed"
+name = "default"
+
+[homes.host]
+kind = "host"
+
+[homes.team]
+kind = "path"
+path = "/absolute/path/to/codex-home"
+agents_path = "/absolute/path/to/agents-home"
+
+[secrets.openai]
+kind = "environment"
+variable = "OPENAI_API_KEY"
+
+[secrets.github]
+kind = "command"
+argv = ["gh", "auth", "token"]
+
+[secrets.registry]
+kind = "file"
+path = "/absolute/path/to/registry-token"
+
+[secrets.team-api]
+kind = "keychain"
+service = "codex-start"
+account = "team-api"

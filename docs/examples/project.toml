@@ -1,0 +1,21 @@
+schema_version = 1
+
+[settings]
+environment = "rust"
+runtime = "auto"
+network = "allowlist"
+worktree = "auto"
+home = "default"
+publish = ["127.0.0.1:8080:8080"]
+allow_hosts = ["docs.rs", "index.crates.io"]
+
+[settings.secret_refs]
+OPENAI_API_KEY = "openai"
+GITHUB_TOKEN = "github"
+
+[settings.codex]
+args = ["--search"]
+
+[settings.codex.config]
+model_reasoning_effort = "high"
+

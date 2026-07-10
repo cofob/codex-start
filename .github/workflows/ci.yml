@@ -1,0 +1,696 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  quality:
+    name: Format, test, Clippy, and repository validation
+    runs-on: ubuntu-24.04
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo test --locked --workspace --all-features
+      - run: cargo test --locked --workspace --all-features --doc
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings -W clippy::pedantic
+      - run: cargo run --locked --package xtask -- validate
+
+  coverage:
+    name: Core and proxy coverage
+    runs-on: ubuntu-24.04
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.8.7
+      - name: Measure coverage and enforce the line gate
+        run: |
+          mkdir -p coverage
+          cargo llvm-cov --locked --all-features \
+            --package codex-start-core \
+            --package codex-start-proxy \
+            --lcov --output-path coverage/lcov.info \
+            --fail-under-lines 75
+      - name: Upload LCOV report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-proxy-coverage
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
+
+  msrv:
+    name: MSRV 1.88
+    runs-on: ubuntu-24.04
+    env:
+      RUSTUP_TOOLCHAIN: 1.88.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - run: cargo check --locked --workspace --all-targets --all-features
+      - run: cargo test --locked --workspace --all-features
+
+  dependencies:
+    name: Dependency, license, and unused-dependency policy
+    runs-on: ubuntu-24.04
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-deny
+      - uses: taiki-e/install-action@cargo-machete
+      - run: cargo deny check
+      - run: cargo machete
+
+  runtime-images:
+    name: ${{ matrix.runtime }} / ${{ matrix.environment }} image
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [docker, podman]
+        environment: [generic, web, uv, rust]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Podman
+        if: matrix.runtime == 'podman'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes podman
+      - name: Runtime information
+        run: ${{ matrix.runtime }} info
+      - name: Build environment
+        shell: bash
+        run: |
+          mapfile -t locked_args < <(cargo run --quiet --locked --package xtask -- build-args)
+          build_args=()
+          for argument in "${locked_args[@]}"; do
+            build_args+=(--build-arg "$argument")
+          done
+          build_args+=(--build-arg TARGETARCH=amd64)
+          ${{ matrix.runtime }} build \
+            --file images/environment/Dockerfile \
+            --target "${{ matrix.environment }}" \
+            --tag "codex-start-ci:${{ matrix.runtime }}-${{ matrix.environment }}" \
+            "${build_args[@]}" \
+            .
+      - name: Smoke-test tools
+        shell: bash
+        run: |
+          image="codex-start-ci:${{ matrix.runtime }}-${{ matrix.environment }}"
+          case "${{ matrix.environment }}" in
+            generic|web) ${{ matrix.runtime }} run --rm --entrypoint codex "$image" --version ;;
+            uv) ${{ matrix.runtime }} run --rm --entrypoint uv "$image" --version ;;
+            rust) ${{ matrix.runtime }} run --rm --entrypoint rustc "$image" --version ;;
+          esac
+      - name: Verify rootless Podman keep-id bind writes through the init helper
+        if: matrix.runtime == 'podman' && matrix.environment == 'generic'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+          fixture="$(mktemp -d)"
+          trap 'rm -rf "${fixture}"' EXIT
+          mkdir "${fixture}/workspace" "${fixture}/init"
+          uid="$(id -u)"
+          gid="$(id -g)"
+          jq --null-input \
+            --argjson uid "${uid}" \
+            --argjson gid "${gid}" \
+            --arg expected_uid "${uid}" \
+            --arg expected_gid "${gid}" \
+            '{
+              version: 1,
+              uid: $uid,
+              gid: $gid,
+              account: "codex",
+              cwd: "/workspace",
+              clear_environment: false,
+              env: {},
+              secret_map: null,
+              secret_root: "/run/codex-start/secrets",
+              allow_insecure_secret_permissions: false,
+              ownership_paths: [],
+              ssh: null,
+              prepare: [],
+              services: [],
+              command: {
+                program: "/bin/sh",
+                args: [
+                  "-euc",
+                  "test \"$(id -u)\" = \"$EXPECTED_UID\"; test \"$(id -g)\" = \"$EXPECTED_GID\"; printf rootless-write > created-by-container"
+                ],
+                env: {EXPECTED_UID: $expected_uid, EXPECTED_GID: $expected_gid},
+                cwd: null
+              }
+            }' >"${fixture}/init/spec.json"
+
+          podman run --rm \
+            --userns "keep-id:uid=${uid},gid=${gid}" \
+            --user 0:0 \
+            --mount "type=bind,src=${fixture}/workspace,dst=/workspace" \
+            --mount "type=bind,src=${fixture}/init,dst=/run/codex-start/init,ro" \
+            --entrypoint /usr/local/bin/codex-start-init \
+            codex-start-ci:podman-generic \
+            run --spec /run/codex-start/init/spec.json
+
+          test "$(cat "${fixture}/workspace/created-by-container")" = rootless-write
+          test "$(stat --format %u "${fixture}/workspace/created-by-container")" = "${uid}"
+          test "$(stat --format %g "${fixture}/workspace/created-by-container")" = "${gid}"
+      - name: Package the generic image for the nested Podman launcher test
+        if: matrix.runtime == 'docker' && matrix.environment == 'generic'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker save codex-start-ci:docker-generic \
+            | zstd --threads=0 -3 --quiet --stdout \
+            >"${RUNNER_TEMP}/codex-start-generic.tar.zst"
+      - name: Upload the generic image for the nested Podman launcher test
+        if: matrix.runtime == 'docker' && matrix.environment == 'generic'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nested-podman-generic-image
+          path: ${{ runner.temp }}/codex-start-generic.tar.zst
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+  rootless-podman-launcher:
+    name: Launcher end-to-end (nested rootless Podman 5.4.2)
+    needs: runtime-images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      PODMAN_NESTED_IMAGE: quay.io/podman/stable:v5.4.2@sha256:52536d900c9e7e7cc924bb737eb8c570eeaa3c50f6a3b0b563eb0ec9c48807e4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: rootless-podman-launcher
+      - name: Build the Linux launcher
+        run: cargo build --locked --bin codex-start
+      - name: Download the prebuilt generic environment
+        uses: actions/download-artifact@v4
+        with:
+          name: nested-podman-generic-image
+          path: ${{ runner.temp }}/nested-podman-image
+      - name: Prepare the same-UID bind-mounted fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/nested-podman"
+          mkdir -p "${root}/project"
+          zstd --decompress --quiet \
+            "${RUNNER_TEMP}/nested-podman-image/codex-start-generic.tar.zst" \
+            --output "${root}/generic-image.tar"
+          cat >"${root}/config.toml" <<'EOF'
+          schema_version = 1
+
+          [settings]
+          environment = "generic"
+          runtime = "podman"
+          network = "offline"
+          worktree = "never"
+          home = "default"
+          tty = "never"
+
+          [settings.forwarding]
+          ssh_agent = false
+          gpg_agent = false
+          git_config = false
+          known_hosts = false
+          host_ssh = false
+          gh_config = false
+          browser = false
+          local_providers = false
+
+          [homes.default]
+          kind = "managed"
+          name = "nested-rootless"
+          EOF
+          cat >"${root}/nested-launch.sh" <<'NESTED'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          dnf install --assumeyes --setopt=install_weak_deps=False git-core
+
+          getent passwd "${TEST_UID}" >/dev/null && {
+            echo "nested image unexpectedly already uses UID ${TEST_UID}" >&2
+            exit 1
+          }
+          getent group "${TEST_GID}" >/dev/null || groupadd --gid "${TEST_GID}" nested
+          useradd --uid "${TEST_UID}" --gid "${TEST_GID}" \
+            --create-home --shell /bin/bash nested
+          printf 'nested:100000:65536\n' >/etc/subuid
+          printf 'nested:100000:65536\n' >/etc/subgid
+          install -d -o "${TEST_UID}" -g "${TEST_GID}" -m 0700 \
+            "/run/user/${TEST_UID}"
+
+          as_nested() {
+            runuser --user nested -- env \
+              HOME=/home/nested \
+              XDG_RUNTIME_DIR="/run/user/${TEST_UID}" \
+              "$@"
+          }
+
+          as_nested_in_project() {
+            as_nested bash -euo pipefail -c 'cd /workspace/project; exec "$@"' bash "$@"
+          }
+
+          test "$(as_nested podman version --format '{{.Client.Version}}')" = 5.4.2
+          test "$(as_nested podman info --format '{{.Host.Security.Rootless}}')" = true
+          as_nested podman load --input /workspace/generic-image.tar
+
+          plan="$(
+            as_nested_in_project /usr/local/bin/codex-start \
+              --config /workspace/config.toml --output json \
+              shell generic --network offline --no-worktree --no-tty --dry-run \
+              -- /bin/true
+          )"
+          expected_image="$(
+            python3 -c 'import json, sys; print(json.load(sys.stdin)["container"]["image"])' \
+              <<<"${plan}"
+          )"
+          as_nested podman tag codex-start-ci:docker-generic "${expected_image}"
+
+          as_nested_in_project /usr/local/bin/codex-start \
+            --config /workspace/config.toml \
+            shell generic --runtime podman --network offline --no-worktree --no-tty -- \
+            /bin/sh -euc '
+              test "$(id -u)" = "$(stat --format %u .)"
+              test "$(id -g)" = "$(stat --format %g .)"
+              printf rootless-launcher-write >created-by-launcher
+            '
+
+          test "$(cat /workspace/project/created-by-launcher)" = rootless-launcher-write
+          test "$(stat --format %u /workspace/project/created-by-launcher)" = "${TEST_UID}"
+          test "$(stat --format %g /workspace/project/created-by-launcher)" = "${TEST_GID}"
+          test -z "$(as_nested podman ps --all --quiet \
+            --filter label=io.codex-start.managed=true)"
+          NESTED
+          chmod 0755 "${root}" "${root}/project"
+          chmod 0755 "${root}/nested-launch.sh"
+          chmod 0644 "${root}/config.toml" "${root}/generic-image.tar"
+      - name: Launch through an unprivileged nested Podman service
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/nested-podman"
+          uid="$(id -u)"
+          gid="$(id -g)"
+          docker run --rm --privileged \
+            --entrypoint /bin/bash \
+            --env TEST_UID="${uid}" \
+            --env TEST_GID="${gid}" \
+            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/source,readonly" \
+            --mount "type=bind,src=${root},dst=/workspace" \
+            --mount "type=bind,src=${GITHUB_WORKSPACE}/target/debug/codex-start,dst=/usr/local/bin/codex-start,readonly" \
+            "${PODMAN_NESTED_IMAGE}" \
+            /workspace/nested-launch.sh
+          test "$(cat "${root}/project/created-by-launcher")" = rootless-launcher-write
+          test "$(stat --format %u "${root}/project/created-by-launcher")" = "${uid}"
+          test "$(stat --format %g "${root}/project/created-by-launcher")" = "${gid}"
+
+  sidecar-images:
+    name: ${{ matrix.runtime }} / sidecar image
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [docker, podman]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Podman
+        if: matrix.runtime == 'podman'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes podman
+      - name: Build sidecar
+        shell: bash
+        run: |
+          mapfile -t locked_args < <(cargo run --quiet --locked --package xtask -- build-args)
+          build_args=()
+          for argument in "${locked_args[@]}"; do
+            build_args+=(--build-arg "$argument")
+          done
+          ${{ matrix.runtime }} build \
+            --file images/sidecar/Dockerfile \
+            --tag "codex-start-sidecar-ci:${{ matrix.runtime }}" \
+            "${build_args[@]}" \
+            .
+          ${{ matrix.runtime }} image inspect "codex-start-sidecar-ci:${{ matrix.runtime }}"
+
+  launcher-e2e:
+    name: Launcher end-to-end (Docker)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      CODEX_START_CI_SECRET_SOURCE: codex-start-ci-secret-value
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: launcher-e2e
+      - name: Configure isolated launcher XDG paths
+        shell: bash
+        run: |
+          {
+            echo "XDG_CONFIG_HOME=${RUNNER_TEMP}/codex-start-e2e/xdg/config"
+            echo "XDG_DATA_HOME=${RUNNER_TEMP}/codex-start-e2e/xdg/data"
+            echo "XDG_CACHE_HOME=${RUNNER_TEMP}/codex-start-e2e/xdg/cache"
+          } >>"${GITHUB_ENV}"
+      - name: Build launcher
+        run: cargo build --locked --bin codex-start
+      - name: Docker information
+        run: docker info
+      - name: Prepare isolated launcher configuration and projects
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/codex-start-e2e"
+          mkdir -p \
+            "${XDG_CONFIG_HOME}/codex-start" \
+            "${root}/projects/generic" \
+            "${root}/projects/web" \
+            "${root}/projects/uv" \
+            "${root}/projects/rust"
+
+          cat >"${root}/config.toml" <<'EOF'
+          schema_version = 1
+
+          [settings]
+          environment = "generic"
+          runtime = "docker"
+          network = "offline"
+          worktree = "never"
+          home = "default"
+          tty = "never"
+
+          [settings.secret_refs]
+          CODEX_START_CI_SECRET = "ci-environment"
+
+          [settings.forwarding]
+          ssh_agent = false
+          gpg_agent = false
+          git_config = false
+          known_hosts = false
+          host_ssh = false
+          gh_config = false
+          browser = false
+          local_providers = false
+
+          [homes.default]
+          kind = "managed"
+          name = "ci"
+
+          [homes.host-ci]
+          kind = "host"
+
+          [secrets.ci-environment]
+          kind = "environment"
+          variable = "CODEX_START_CI_SECRET_SOURCE"
+          EOF
+
+          printf '{}\n' >"${root}/projects/web/package.json"
+          cat >"${root}/projects/uv/pyproject.toml" <<'EOF'
+          [project]
+          name = "codex-start-ci-fixture"
+          version = "0.0.0"
+          requires-python = ">=3.11"
+          EOF
+          cat >"${root}/projects/rust/Cargo.toml" <<'EOF'
+          [package]
+          name = "codex-start-ci-fixture"
+          version = "0.0.0"
+          edition = "2024"
+          EOF
+      - name: Launch every built-in environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          launcher="${GITHUB_WORKSPACE}/target/debug/codex-start"
+          config="${RUNNER_TEMP}/codex-start-e2e/config.toml"
+          projects="${RUNNER_TEMP}/codex-start-e2e/projects"
+
+          for environment in generic web uv rust; do
+            case "${environment}" in
+              generic) network=allowlist ;;
+              uv) network=offline ;;
+              web|rust) network=bridge ;;
+            esac
+            (
+              cd "${projects}/${environment}"
+              "${launcher}" --config "${config}" run "${environment}" \
+                --network "${network}" --no-worktree --no-tty -- --version
+            )
+          done
+      - name: Verify piped stdin, secret injection, and dry-run redaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          launcher="${GITHUB_WORKSPACE}/target/debug/codex-start"
+          config="${RUNNER_TEMP}/codex-start-e2e/config.toml"
+          project="${RUNNER_TEMP}/codex-start-e2e/projects/generic"
+
+          (
+            cd "${project}"
+            printf '%s\n' 'piped-through-docker' | \
+              "${launcher}" --config "${config}" shell generic \
+                --network offline --no-worktree --no-tty -- \
+                sh -euc 'IFS= read -r value; test "$value" = piped-through-docker; test "$CODEX_START_CI_SECRET" = codex-start-ci-secret-value'
+
+            plan="$("${launcher}" --config "${config}" --output json run generic \
+              --network offline --no-worktree --no-tty --dry-run -- --version)"
+            if grep --fixed-strings --quiet "${CODEX_START_CI_SECRET_SOURCE}" <<<"${plan}"; then
+              echo 'secret value was exposed by the dry-run plan' >&2
+              exit 1
+            fi
+          )
+      - name: Verify complete Codex surfaces and exact passthrough
+        shell: bash
+        run: |
+          set -euo pipefail
+          launcher="${GITHUB_WORKSPACE}/target/debug/codex-start"
+          config="${RUNNER_TEMP}/codex-start-e2e/config.toml"
+          project="${RUNNER_TEMP}/codex-start-e2e/projects/generic"
+          home="${XDG_DATA_HOME}/codex-start/homes/ci"
+
+          mkdir -p "${home}/.codex" "${home}/.agents/skills" "${home}/.agents/plugins"
+          mkdir -p "${RUNNER_TEMP}/codex-start-e2e/host-home/.codex" \
+            "${RUNNER_TEMP}/codex-start-e2e/host-home/.agents"
+          printf 'model = "profile-smoke"\n' >"${home}/.codex/smoke.config.toml"
+          printf '# Codex launcher fixture\n' >"${project}/AGENTS.md"
+
+          for surface in exec review mcp plugin mcp-server app-server remote-control \
+            completion doctor sandbox debug resume cloud exec-server; do
+            (
+              cd "${project}"
+              "${launcher}" --config "${config}" run generic \
+                --network offline --no-worktree --no-tty -- "${surface}" --help >/dev/null
+            )
+          done
+          (
+            cd "${project}"
+            "${launcher}" --config "${config}" run generic \
+              --network offline --no-worktree --no-tty -- \
+              --profile smoke features list >/dev/null
+            "${launcher}" --config "${config}" run generic \
+              --network offline --no-worktree --no-tty -- \
+              -c 'mcp_servers."ci.server".command="printf"' \
+              -c 'mcp_servers."ci.server".args=[""]' mcp get ci.server >/dev/null
+            "${launcher}" --config "${config}" shell generic \
+              --network offline --no-worktree --no-tty -- \
+              sh -euc 'test -f AGENTS.md; test -d /home/codex/.agents/skills; test -d /home/codex/.agents/plugins; test "$(id -u)" = "$(stat -c %u .)"'
+            CODEX_START__FORWARDING__BROWSER=true \
+              CODEX_START__FORWARDING__HOST_SSH=true \
+              CODEX_START__FORWARDING__LOCAL_PROVIDERS=true \
+              "${launcher}" --config "${config}" run generic \
+                --network allowlist --no-worktree --no-tty -- \
+                --oss --local-provider ollama --version >/dev/null
+            HOME="${RUNNER_TEMP}/codex-start-e2e/host-home" \
+              "${launcher}" --config "${config}" run generic \
+                --home host-ci --network offline --no-worktree --no-tty -- --version >/dev/null
+
+            set +e
+            exact_output="$("${launcher}" --config "${config}" shell generic \
+              --network offline --no-worktree --no-tty -- \
+              sh -c 'printf exact-stdout; exit 42')"
+            exact_status=$?
+            set -e
+            test "${exact_status}" -eq 42
+            test "${exact_output}" = exact-stdout
+          )
+      - name: Verify Git worktree lifecycle and host networking
+        shell: bash
+        run: |
+          set -euo pipefail
+          launcher="${GITHUB_WORKSPACE}/target/debug/codex-start"
+          config="${RUNNER_TEMP}/codex-start-e2e/config.toml"
+          repository="${RUNNER_TEMP}/codex-start-e2e/worktree-repository"
+
+          mkdir -p "${repository}"
+          git -C "${repository}" init --initial-branch=main
+          git -C "${repository}" config user.name codex-start-ci
+          git -C "${repository}" config user.email codex-start-ci@example.invalid
+          printf 'fixture\n' >"${repository}/README.md"
+          git -C "${repository}" add README.md
+          git -C "${repository}" commit --message initial
+          (
+            cd "${repository}"
+            "${launcher}" --config "${config}" run generic \
+              --network bridge --worktree --name clean-ci --no-tty -- --version
+            test "$(git worktree list --porcelain | grep --count '^worktree ')" -eq 1
+            "${launcher}" --config "${config}" run generic \
+              --network host --no-worktree --no-tty -- --version
+          )
+      - name: Verify signal propagation and cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          launcher="${GITHUB_WORKSPACE}/target/debug/codex-start"
+          config="${RUNNER_TEMP}/codex-start-e2e/config.toml"
+          project="${RUNNER_TEMP}/codex-start-e2e/projects/generic"
+          (
+            cd "${project}"
+            exec "${launcher}" --config "${config}" shell generic \
+              --network bridge --no-worktree --no-tty \
+              --publish 127.0.0.1:18080:18080 -- \
+              sh -c 'python3 -m http.server 18080 --bind 0.0.0.0 & child=$!; trap "kill -TERM $child; wait $child || true; exit 0" TERM; wait $child'
+          ) &
+          launcher_pid=$!
+          container=""
+          for _ in $(seq 1 60); do
+            container="$(docker ps --quiet \
+              --filter label=io.codex-start.managed=true \
+              --filter label=io.codex-start.role=workload | head -n 1)"
+            [[ -z "${container}" ]] || break
+            sleep 0.5
+          done
+          test -n "${container}"
+          for _ in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:18080/ >/dev/null && break
+            sleep 0.5
+          done
+          curl --fail --silent http://127.0.0.1:18080/ >/dev/null
+          kill -TERM "${launcher_pid}"
+          wait "${launcher_pid}"
+          test -z "$(docker ps --all --quiet --filter label=io.codex-start.managed=true)"
+      - name: Verify owned-resource cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          launcher="${GITHUB_WORKSPACE}/target/debug/codex-start"
+          config="${RUNNER_TEMP}/codex-start-e2e/config.toml"
+
+          cleanup() {
+            set +e
+            "${launcher}" --config "${config}" resources --runtime docker cleanup --force
+            docker rm --force codex-start-ci-stale >/dev/null 2>&1
+            docker network rm codex-start-ci-stale-network >/dev/null 2>&1
+            docker volume rm --force codex-start-ci-stale-volume >/dev/null 2>&1
+            docker volume rm --force codex-start-ci-unowned-volume >/dev/null 2>&1
+          }
+          trap cleanup EXIT
+
+          mapfile -t leaked_containers < <(docker ps --all --quiet \
+            --filter label=io.codex-start.managed=true)
+          mapfile -t leaked_networks < <(docker network ls --quiet \
+            --filter label=io.codex-start.managed=true)
+          mapfile -t leaked_volumes < <(docker volume ls --quiet \
+            --filter label=io.codex-start.ephemeral=true \
+            --filter label=io.codex-start.managed=true)
+          if (( ${#leaked_containers[@]} || ${#leaked_networks[@]} || ${#leaked_volumes[@]} )); then
+            echo 'a foreground launch leaked managed runtime resources' >&2
+            docker ps --all --filter label=io.codex-start.managed=true
+            docker network ls --filter label=io.codex-start.managed=true
+            docker volume ls --filter label=io.codex-start.ephemeral=true
+            exit 1
+          fi
+
+          mapfile -t generic_images < <(docker image ls --format '{{.Repository}}:{{.Tag}}' \
+            --filter reference='codex-start-env-generic:*')
+          test "${#generic_images[@]}" -gt 0
+          docker create --name codex-start-ci-stale \
+            --label io.codex-start.managed=true "${generic_images[0]}" true >/dev/null
+          docker network create --internal \
+            --label io.codex-start.managed=true codex-start-ci-stale-network >/dev/null
+          docker volume create \
+            --label io.codex-start.managed=true \
+            --label io.codex-start.ephemeral=true codex-start-ci-stale-volume >/dev/null
+          docker volume create \
+            --label io.codex-start.ephemeral=true codex-start-ci-unowned-volume >/dev/null
+
+          "${launcher}" --config "${config}" resources --runtime docker cleanup --force
+
+          test -z "$(docker ps --all --quiet --filter label=io.codex-start.managed=true)"
+          test -z "$(docker network ls --quiet --filter label=io.codex-start.managed=true)"
+          test -z "$(docker volume ls --quiet \
+            --filter label=io.codex-start.ephemeral=true \
+            --filter label=io.codex-start.managed=true)"
+          docker volume inspect codex-start-ci-unowned-volume >/dev/null
+      - name: Clean up after launcher tests
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          launcher="${GITHUB_WORKSPACE}/target/debug/codex-start"
+          config="${RUNNER_TEMP}/codex-start-e2e/config.toml"
+          if [[ -x "${launcher}" && -f "${config}" ]]; then
+            "${launcher}" --config "${config}" resources --runtime docker cleanup --force
+          fi
+
+          mapfile -t containers < <(docker ps --all --quiet \
+            --filter label=io.codex-start.managed=true)
+          if (( ${#containers[@]} )); then
+            docker rm --force "${containers[@]}"
+          fi
+          mapfile -t networks < <(docker network ls --quiet \
+            --filter label=io.codex-start.managed=true)
+          if (( ${#networks[@]} )); then
+            docker network rm "${networks[@]}"
+          fi
+          mapfile -t volumes < <(docker volume ls --quiet \
+            --filter label=io.codex-start.ephemeral=true \
+            --filter label=io.codex-start.managed=true)
+          if (( ${#volumes[@]} )); then
+            docker volume rm --force "${volumes[@]}"
+          fi

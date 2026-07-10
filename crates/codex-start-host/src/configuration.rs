@@ -1,0 +1,567 @@
+//! Host-side configuration discovery, resolution, and mutation.
+
+use std::{
+    env,
+    ffi::OsString,
+    fs,
+    os::unix::ffi::OsStrExt,
+    path::{Path, PathBuf},
+};
+
+use codex_start_core::{
+    ConfigDocument, ConfigLayer, ConfigLayerKind, ConfigPatch, ConfigResolver, HomeConfig,
+    NetworkMode, ResolvedConfig, RuntimeKind as CoreRuntimeKind, TtyMode,
+    WorktreeMode as CoreWorktreeMode,
+};
+use toml_edit::{DocumentMut, Item, Table};
+
+use crate::{
+    cli::{NetworkModeArg, PortProtocol, PortSpec, RunOptions},
+    environments::EnvironmentCatalog,
+    error::{HostError, Result},
+    git::GitRepo,
+    home::discover_home_configs,
+    paths::{AppPaths, atomic_write, ensure_regular_file_or_missing},
+    runtime::{RuntimeKind, format_publish_address},
+};
+
+/// Paths and identity relevant to one configuration resolution.
+#[derive(Clone, Debug)]
+pub struct ConfigContext {
+    /// Application roots.
+    pub paths: AppPaths,
+    /// Canonical invocation directory.
+    pub cwd: PathBuf,
+    /// Optional repository metadata.
+    pub repo: Option<GitRepo>,
+    /// Global file selected for this invocation.
+    pub global_file: PathBuf,
+    /// Private project settings file.
+    pub project_file: PathBuf,
+}
+
+impl ConfigContext {
+    /// Discover configuration and project locations without creating project settings.
+    pub fn discover(global_override: Option<&Path>) -> Result<Self> {
+        let paths = AppPaths::discover()?;
+        paths.ensure()?;
+        let cwd =
+            env::current_dir().map_err(|source| HostError::io("current directory", source))?;
+        let cwd = fs::canonicalize(&cwd).map_err(|source| HostError::io(&cwd, source))?;
+        let repo = GitRepo::discover(&cwd)?;
+        let global_file = global_override.map_or_else(|| paths.config_file(), Path::to_path_buf);
+        let project_file = repo.as_ref().map_or_else(
+            || paths.non_git_project_file(&cwd),
+            GitRepo::project_config_path,
+        );
+        Ok(Self {
+            paths,
+            cwd,
+            repo,
+            global_file,
+            project_file,
+        })
+    }
+
+    /// Project root mounted for direct runs.
+    pub fn project_root(&self) -> &Path {
+        self.repo
+            .as_ref()
+            .map_or(self.cwd.as_path(), |repo| repo.root.as_path())
+    }
+
+    /// Resolve every persistent layer, environment override, and CLI patch.
+    pub fn resolve(&self, cli_patch: Option<ConfigPatch>) -> Result<ResolvedConfig> {
+        let preliminary = self.resolve_layers(None, cli_patch.clone())?;
+        let catalog = EnvironmentCatalog::load(&self.paths)?;
+        let selected = if preliminary
+            .provenance
+            .source_for("environment")
+            .is_some_and(|source| source.kind == ConfigLayerKind::BuiltIn)
+        {
+            catalog
+                .detect(self.project_root())?
+                .unwrap_or_else(|| preliminary.config.environment.clone())
+        } else {
+            preliminary.config.environment.clone()
+        };
+        let environment = catalog.resolve(&selected)?;
+        let mut defaults = environment.settings;
+        defaults.environment = Some(selected.clone());
+        self.resolve_layers(
+            Some((format!("environment:{selected}"), defaults)),
+            cli_patch,
+        )
+    }
+
+    fn resolve_layers(
+        &self,
+        environment: Option<(String, ConfigPatch)>,
+        cli_patch: Option<ConfigPatch>,
+    ) -> Result<ResolvedConfig> {
+        let mut resolver = ConfigResolver::new();
+        let discovered_homes = discover_home_configs(&self.paths)?;
+        if !discovered_homes.is_empty() {
+            resolver
+                .add_document(
+                    ConfigLayerKind::BuiltIn,
+                    "discovered homes",
+                    ConfigDocument {
+                        homes: discovered_homes,
+                        ..ConfigDocument::default()
+                    },
+                )
+                .map_err(config_error)?;
+        }
+        if let Some((label, patch)) = environment {
+            resolver
+                .add_layer(ConfigLayer::new(ConfigLayerKind::Environment, label, patch))
+                .map_err(config_error)?;
+        }
+        if ensure_regular_file_or_missing(&self.global_file)? {
+            let document = read_document(&self.global_file, false)?;
+            resolver
+                .add_document(
+                    ConfigLayerKind::Global,
+                    self.global_file.display().to_string(),
+                    document,
+                )
+                .map_err(config_error)?;
+        }
+        if ensure_regular_file_or_missing(&self.project_file)? {
+            let document = read_document(&self.project_file, true)?;
+            resolver
+                .add_document(
+                    ConfigLayerKind::Project,
+                    self.project_file.display().to_string(),
+                    document,
+                )
+                .map_err(config_error)?;
+        }
+        resolver
+            .add_environment_overrides(environment_overrides(env::vars_os())?)
+            .map_err(config_error)?;
+        if let Some(patch) = cli_patch {
+            resolver
+                .add_layer(ConfigLayer::new(
+                    ConfigLayerKind::CommandLine,
+                    "command line",
+                    patch,
+                ))
+                .map_err(config_error)?;
+        }
+        resolver.resolve().map_err(config_error)
+    }
+
+    /// Initialize an explicit global or private project document.
+    pub fn initialize(
+        &self,
+        global: bool,
+        environment: Option<&str>,
+        force: bool,
+    ) -> Result<PathBuf> {
+        let path = if global {
+            &self.global_file
+        } else {
+            &self.project_file
+        };
+        let exists = ensure_regular_file_or_missing(path)?;
+        if exists && !force {
+            return Err(HostError::Config(format!(
+                "{} already exists; use --force to replace it",
+                path.display()
+            )));
+        }
+        if exists {
+            let backup = path.with_extension("toml.bak");
+            let original =
+                fs::read_to_string(path).map_err(|source| HostError::io(path, source))?;
+            atomic_write(&backup, &original)?;
+        }
+        let catalog = EnvironmentCatalog::load(&self.paths)?;
+        let environment = if let Some(environment) = environment {
+            catalog.resolve(environment)?;
+            environment.to_owned()
+        } else {
+            catalog
+                .detect(self.project_root())?
+                .unwrap_or_else(|| "generic".to_owned())
+        };
+        let contents = if global {
+            format!(
+                "schema_version = 1\n\n[settings]\nenvironment = {environment:?}\nruntime = \"auto\"\nnetwork = \"allowlist\"\nworktree = \"auto\"\nhome = \"default\"\n\n[homes.default]\nkind = \"managed\"\nname = \"default\"\n"
+            )
+        } else {
+            format!("schema_version = 1\n\n[settings]\nenvironment = {environment:?}\n")
+        };
+        atomic_write(path, &contents)?;
+        Ok(path.clone())
+    }
+
+    /// Set a dotted TOML key atomically, creating an otherwise minimal document.
+    pub fn set(&self, global: bool, key: &str, value: &str) -> Result<PathBuf> {
+        let path = if global {
+            &self.global_file
+        } else {
+            &self.project_file
+        };
+        let contents = if ensure_regular_file_or_missing(path)? {
+            fs::read_to_string(path).map_err(|source| HostError::io(path, source))?
+        } else {
+            "schema_version = 1\n".to_owned()
+        };
+        let mut document = contents
+            .parse::<DocumentMut>()
+            .map_err(|error| HostError::Config(format!("{}: {error}", path.display())))?;
+        let key = if key.starts_with("settings.")
+            || key.starts_with("homes.")
+            || key.starts_with("secrets.")
+            || key.starts_with("profiles.")
+            || key == "schema_version"
+        {
+            key.to_owned()
+        } else {
+            format!("settings.{key}")
+        };
+        let segments = key.split('.').collect::<Vec<_>>();
+        if segments.iter().any(|segment| segment.is_empty()) {
+            return Err(HostError::Usage(
+                "configuration key contains an empty segment".to_owned(),
+            ));
+        }
+        let mut wrapper = format!("value = {value}")
+            .parse::<DocumentMut>()
+            .map_err(|error| HostError::Usage(format!("value is not valid TOML: {error}")))?;
+        let item = wrapper
+            .remove("value")
+            .ok_or_else(|| HostError::Usage("value is not valid TOML".to_owned()))?;
+        insert_item(document.as_table_mut(), &segments, item)?;
+        // Strict validation before replacing a user's file.
+        let rendered = document.to_string();
+        let parsed = ConfigDocument::parse_file(path, &rendered).map_err(config_error)?;
+        if !global {
+            parsed.validate_as_project().map_err(config_error)?;
+        }
+        atomic_write(path, &rendered)?;
+        Ok(path.clone())
+    }
+}
+
+fn environment_overrides(
+    values: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Result<Vec<(String, String)>> {
+    let mut overrides = Vec::new();
+    for (name, value) in values {
+        if !name.as_os_str().as_bytes().starts_with(b"CODEX_START__") {
+            continue;
+        }
+        let name = name.into_string().map_err(|name| {
+            HostError::Config(format!(
+                "codex-start environment override name is not UTF-8: {:?}",
+                name.as_os_str().as_bytes()
+            ))
+        })?;
+        let value = value.into_string().map_err(|_| {
+            HostError::Config(format!("environment override {name} has a non-UTF-8 value"))
+        })?;
+        overrides.push((name, value));
+    }
+    Ok(overrides)
+}
+
+/// Convert CLI options into the highest-precedence typed patch.
+pub fn patch_from_run_options(environment: Option<&str>, options: &RunOptions) -> ConfigPatch {
+    let network = if options.offline {
+        Some(NetworkMode::Offline)
+    } else if options.no_network {
+        Some(NetworkMode::Allowlist)
+    } else {
+        options.network.map(|mode| match mode {
+            NetworkModeArg::Offline => NetworkMode::Offline,
+            NetworkModeArg::Allowlist => NetworkMode::Allowlist,
+            NetworkModeArg::Bridge => NetworkMode::Bridge,
+            NetworkModeArg::Host => NetworkMode::Host,
+        })
+    };
+    let worktree = if options.no_worktree {
+        Some(CoreWorktreeMode::Never)
+    } else if options.worktree {
+        Some(CoreWorktreeMode::Always)
+    } else {
+        None
+    };
+    ConfigPatch {
+        environment: environment.map(str::to_owned),
+        runtime: options.runtime.map(|runtime| match runtime {
+            RuntimeKind::Auto => CoreRuntimeKind::Auto,
+            RuntimeKind::Docker => CoreRuntimeKind::Docker,
+            RuntimeKind::Podman => CoreRuntimeKind::Podman,
+        }),
+        network,
+        worktree,
+        home: options.home.clone(),
+        name: options.name.clone(),
+        publish: (!options.publish.is_empty())
+            .then(|| options.publish.iter().map(render_port).collect()),
+        rebuild: options.rebuild.then_some(true),
+        tty: options.no_tty.then_some(TtyMode::Never),
+        allow_hosts: (!options.allow_hosts.is_empty()).then(|| options.allow_hosts.clone()),
+        ..ConfigPatch::default()
+    }
+}
+
+/// Convert a resolved core home into the host home module's representation.
+pub fn host_home_spec(home: &HomeConfig) -> crate::home::HomeSpec {
+    match home {
+        HomeConfig::Managed { name } => crate::home::HomeSpec {
+            storage_name: name.clone(),
+            ..crate::home::HomeSpec::default()
+        },
+        HomeConfig::Host => crate::home::HomeSpec {
+            kind: crate::home::HomeKind::Host,
+            storage_name: None,
+            path: None,
+            agents_path: None,
+        },
+        HomeConfig::Path { path, agents_path } => crate::home::HomeSpec {
+            kind: crate::home::HomeKind::Path,
+            storage_name: None,
+            path: Some(path.clone()),
+            agents_path: agents_path.clone(),
+        },
+    }
+}
+
+fn read_document(path: &Path, project: bool) -> Result<ConfigDocument> {
+    ensure_regular_file_or_missing(path)?;
+    let text = fs::read_to_string(path).map_err(|source| HostError::io(path, source))?;
+    let document = ConfigDocument::parse_file(path, &text).map_err(config_error)?;
+    if project {
+        document.validate_as_project().map_err(config_error)?;
+    }
+    Ok(document)
+}
+
+fn insert_item(table: &mut Table, segments: &[&str], item: Item) -> Result<()> {
+    let Some((head, tail)) = segments.split_first() else {
+        return Err(HostError::Usage("configuration key is empty".to_owned()));
+    };
+    if tail.is_empty() {
+        table.insert(head, item);
+        return Ok(());
+    }
+    if !table.contains_key(head) {
+        table.insert(head, Item::Table(Table::new()));
+    }
+    let child = table
+        .get_mut(head)
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| HostError::Usage(format!("{head:?} already exists and is not a table")))?;
+    insert_item(child, tail, item)
+}
+
+fn render_port(port: &PortSpec) -> String {
+    let protocol = match port.protocol {
+        PortProtocol::Tcp => "tcp",
+        PortProtocol::Udp => "udp",
+    };
+    format_publish_address(port.host_ip, port.host_port, port.container_port, protocol)
+}
+
+fn config_error(error: impl std::fmt::Display) -> HostError {
+    HostError::Config(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use codex_start_core::{ConfigLayerKind, ConfigPatch, HomeConfig};
+
+    use super::{ConfigContext, environment_overrides};
+
+    #[test]
+    fn set_validates_and_writes_project_document() {
+        let root = tempfile::tempdir().expect("root");
+        let paths = crate::paths::AppPaths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            cache: root.path().join("cache"),
+        };
+        paths.ensure().expect("paths");
+        let context = ConfigContext {
+            global_file: paths.config_file(),
+            project_file: root.path().join("project.toml"),
+            cwd: root.path().to_path_buf(),
+            repo: None,
+            paths,
+        };
+        context.set(false, "network", "\"offline\"").expect("set");
+        let value = fs::read_to_string(&context.project_file).expect("read");
+        assert!(value.contains("network = \"offline\""));
+    }
+
+    #[test]
+    fn initialize_detects_custom_environment_markers() {
+        let root = tempfile::tempdir().expect("root");
+        let paths = crate::paths::AppPaths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            cache: root.path().join("cache"),
+        };
+        paths.ensure().expect("paths");
+        fs::write(root.path().join("custom.marker"), "").expect("marker");
+        fs::write(
+            paths.environments_dir().join("custom.toml"),
+            "schema_version=1\nname='custom'\nextends='generic'\nmarkers=['custom.marker']\n",
+        )
+        .expect("custom environment");
+        let context = ConfigContext {
+            global_file: paths.config_file(),
+            project_file: root.path().join("project.toml"),
+            cwd: root.path().to_path_buf(),
+            repo: None,
+            paths,
+        };
+
+        context.initialize(false, None, false).expect("initialize");
+        let value = fs::read_to_string(&context.project_file).expect("read");
+        assert!(value.contains("environment = \"custom\""));
+        assert!(context.initialize(true, Some("unknown"), false).is_err());
+    }
+
+    #[test]
+    fn discovered_home_resolves_without_persisting_configuration() {
+        let root = tempfile::tempdir().expect("root");
+        let paths = crate::paths::AppPaths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            cache: root.path().join("cache"),
+        };
+        paths.ensure().expect("paths");
+        fs::create_dir(paths.homes_dir().join("work")).expect("managed home");
+        let context = ConfigContext {
+            global_file: paths.config_file(),
+            project_file: root.path().join("project.toml"),
+            cwd: root.path().to_path_buf(),
+            repo: None,
+            paths,
+        };
+
+        let resolved = context
+            .resolve(Some(ConfigPatch {
+                home: Some("work".to_owned()),
+                ..ConfigPatch::default()
+            }))
+            .expect("resolve discovered home");
+        assert_eq!(
+            resolved.config.home,
+            HomeConfig::Managed {
+                name: Some("work".to_owned())
+            }
+        );
+        let source = resolved
+            .provenance
+            .source_for("homes.work.kind")
+            .expect("home provenance");
+        assert_eq!(source.kind, ConfigLayerKind::BuiltIn);
+        assert_eq!(source.label, "discovered homes");
+        assert!(!context.global_file.exists());
+        assert!(!context.project_file.exists());
+    }
+
+    #[test]
+    fn configured_home_overrides_discovered_home_definition() {
+        let root = tempfile::tempdir().expect("root");
+        let paths = crate::paths::AppPaths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            cache: root.path().join("cache"),
+        };
+        paths.ensure().expect("paths");
+        fs::create_dir(paths.homes_dir().join("shared")).expect("managed home");
+        let selected = root.path().join("selected");
+        fs::write(
+            paths.config_file(),
+            format!("schema_version = 1\n\n[homes.shared]\nkind = \"path\"\npath = {selected:?}\n"),
+        )
+        .expect("global config");
+        let context = ConfigContext {
+            global_file: paths.config_file(),
+            project_file: root.path().join("project.toml"),
+            cwd: root.path().to_path_buf(),
+            repo: None,
+            paths,
+        };
+
+        let resolved = context
+            .resolve(Some(ConfigPatch {
+                home: Some("shared".to_owned()),
+                ..ConfigPatch::default()
+            }))
+            .expect("resolve configured home");
+        assert_eq!(
+            resolved.config.home,
+            HomeConfig::Path {
+                path: selected,
+                agents_path: None
+            }
+        );
+        assert_eq!(
+            resolved
+                .provenance
+                .source_for("homes.shared.kind")
+                .expect("home provenance")
+                .kind,
+            ConfigLayerKind::Global
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn environment_override_decoding_ignores_unrelated_non_utf8_and_rejects_relevant_values() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        let unrelated = (
+            OsString::from_vec(vec![0xff]),
+            OsString::from_vec(vec![0xfe]),
+        );
+        assert!(environment_overrides([unrelated]).unwrap().is_empty());
+        let relevant = (
+            OsString::from("CODEX_START__NETWORK"),
+            OsString::from_vec(vec![0xff]),
+        );
+        assert!(environment_overrides([relevant]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn set_rejects_symbolic_link_configuration_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("root");
+        let paths = crate::paths::AppPaths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            cache: root.path().join("cache"),
+        };
+        paths.ensure().expect("paths");
+        let outside = root.path().join("outside.toml");
+        fs::write(&outside, "schema_version = 1\n").expect("outside");
+        let project_file = root.path().join("project.toml");
+        symlink(&outside, &project_file).expect("symlink");
+        let context = ConfigContext {
+            global_file: paths.config_file(),
+            project_file,
+            cwd: root.path().to_path_buf(),
+            repo: None,
+            paths,
+        };
+
+        assert!(context.set(false, "network", "\"offline\"").is_err());
+        assert_eq!(
+            fs::read_to_string(outside).expect("outside read"),
+            "schema_version = 1\n"
+        );
+    }
+}

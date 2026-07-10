@@ -1,0 +1,137 @@
+name: Release binaries
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed tag to package
+        required: true
+
+permissions:
+  attestations: write
+  contents: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            cross: true
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            cross: false
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            cross: false
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Derive release metadata from the tag commit
+        id: release_metadata
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "release tag must be a v-prefixed semantic version: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          commit="$(git rev-parse --verify "${RELEASE_TAG}^{commit}")"
+          epoch="$(git show --no-patch --format=%ct "${commit}")"
+          echo "version=${RELEASE_TAG#v}" >>"${GITHUB_OUTPUT}"
+          echo "source_date_epoch=${epoch}" >>"${GITHUB_OUTPUT}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - uses: taiki-e/install-action@cross
+        if: matrix.cross
+      - uses: anchore/sbom-action/download-syft@v0
+      - uses: sigstore/cosign-installer@v3.8.1
+      - name: Build
+        shell: bash
+        run: |
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            cross build --locked --release --package codex-start --target "${{ matrix.target }}"
+          else
+            cargo build --locked --release --package codex-start --target "${{ matrix.target }}"
+          fi
+      - name: Package, inventory, and sign
+        id: package
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.release_metadata.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ steps.release_metadata.outputs.source_date_epoch }}
+        run: |
+          set -euo pipefail
+          archive="codex-start-${RELEASE_VERSION}-${{ matrix.target }}"
+          mkdir -p "staging/${archive}"
+          cp "target/${{ matrix.target }}/release/codex-start" "staging/${archive}/"
+          cp README.md LICENSE "staging/${archive}/"
+          cargo run --quiet --locked --package xtask -- release-archive \
+            "staging/${archive}" "${archive}.tar.gz" \
+            --prefix "${archive}" --executable codex-start
+          syft "dir:staging/${archive}" -o "spdx-json=${archive}.spdx.json"
+          cosign sign-blob --yes --bundle "${archive}.tar.gz.bundle" "${archive}.tar.gz"
+          echo "archive=${archive}" >>"$GITHUB_OUTPUT"
+      - name: Attest binary archive provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}.tar.gz
+      - name: Attest SBOM provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}.spdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.archive }}
+          path: |
+            ${{ steps.package.outputs.archive }}.tar.gz
+            ${{ steps.package.outputs.archive }}.tar.gz.bundle
+            ${{ steps.package.outputs.archive }}.spdx.json
+          if-no-files-found: error
+
+  publish:
+    name: Checksums and GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: sigstore/cosign-installer@v3.8.1
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: codex-start-*
+          merge-multiple: true
+      - name: Generate and sign checksums
+        run: |
+          cargo run --quiet --locked --package xtask -- release-checksums dist --output dist/SHA256SUMS
+          cosign sign-blob --yes --bundle dist/SHA256SUMS.bundle dist/SHA256SUMS
+          cargo run --quiet --locked --package xtask -- verify-checksums dist/SHA256SUMS --base dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*

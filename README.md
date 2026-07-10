@@ -1,0 +1,142 @@
+# codex-start
+
+codex-start runs the complete OpenAI Codex CLI in reproducible, project-aware Docker or Podman environments. It preserves Codex’s own homes, config, profiles, MCP servers, skills, plugins, hooks, rules, app-server, mcp-server, cloud, exec, review, resume, and arbitrary CLI arguments while adding safe worktrees, typed launcher configuration, managed secrets, and allowlisted networking.
+
+The host orchestrator, container init, egress proxy, and transport relays are Rust. The workspace forbids `unsafe` and treats Clippy’s pedantic lint group as a release gate.
+
+## Install
+
+Download the signed archive for macOS or Linux (amd64 or arm64) from GitHub Releases, verify it against `SHA256SUMS` and the adjacent Sigstore bundle, then place `codex-start` on `PATH`. Building from source requires Rust 1.88 or newer:
+
+```console
+cargo install --locked --path crates/codex-start-host
+```
+
+You also need Docker 27+ or Podman 5.4+, Git, and the usual engine VM on macOS. `codex-start doctor` validates configuration, environments, the selected home, Git discovery, and the selected runtime. `doctor --deep` also runs `codex --version` and an offline `codex sandbox -- /bin/true` probe in the selected image; a failed nested-sandbox probe is a warning because the container remains the default security boundary.
+
+On rootless Podman, codex-start automatically maps the Podman service user to the workload UID/GID with a `keep-id` user namespace so the final non-root workload can write the bind-mounted checkout. The Rust init helper still starts as container root, remaps the `codex` account, prepares container-owned volumes, and drops privileges before running Codex. Docker and rootful Podman retain their normal identity mapping; remote rootless Podman receives the explicit workload mapping rather than assuming the client and service use the same numeric IDs.
+
+## Quick start
+
+```console
+# Detect rust/web/uv from project markers, otherwise use generic.
+codex-start run
+
+# Select an environment and pass every following argument to Codex unchanged.
+codex-start run rust -- exec --json "run the tests"
+
+# Open a shell with the same mounts, caches, home, and network policy.
+codex-start shell uv
+
+# Validate and print the redacted logical plan without contacting an engine.
+codex-start --output json run --dry-run
+
+# Positional pi-start compatibility: a known first value selects an environment.
+codex-start rust exec --json "run the tests"
+
+# Otherwise every positional value is passed to Codex with normal environment detection.
+codex-start exec --json "summarize this repository"
+```
+
+By default a Git project runs in a reusable `codex/<name>` worktree, uses a shared managed Codex home named `default`, and has allowlisted egress. The original repository-relative working directory is preserved inside `/workspaces/<project-id>/<worktree>`.
+
+Common lifecycle commands:
+
+```console
+codex-start worktree commit --name feature-name
+codex-start worktree squash --name feature-name
+codex-start worktree move --name feature-name
+codex-start worktree edit --name feature-name
+codex-start worktree cleanup
+codex-start resources list
+codex-start resources logs RUN_ID
+codex-start resources stop RUN_ID
+codex-start resources cleanup
+```
+
+`worktree cleanup` refuses dirty managed worktrees and deletes only merged owned branches; add `--force` to remove dirty worktrees and unmerged owned branches. `resources cleanup` removes stopped/stale owned resources and reports running workloads as skipped; add `--force` to stop and remove running workloads too.
+
+Migration aliases from pi-start are accepted, including `--commit`, `--squash`, `--move`, `--edit`, `--shell`, `--cleanup`, `--cleanup-git`, and `--no-network`. The last is a deprecated name for allowlist mode; `--offline` means no egress. In positional compatibility mode, a first value matching a loaded environment selects it and the remainder is passed to Codex; when it does not match an environment, all values are passed to Codex with the configured or detected environment.
+
+## Environments
+
+| Environment | Includes | Defaults |
+| --- | --- | --- |
+| `generic` | Node 24, Python/build tools, Git/GH/GPG/SSH, diagnostics including `socat`, Codex | shared npm/GH caches |
+| `web` | generic | requires `package.json`; loopback 5173/4173 |
+| `uv` | generic plus pinned uv and the `just` task runner | requires `pyproject.toml`; fresh venv; full sync |
+| `rust` | pinned stable Rust 1.97/Clippy/rustfmt/analyzer, LLVM/debuggers, Node 24, `socat` | requires `Cargo.toml`; project Cargo/target caches |
+
+Images and artifacts are pinned in [assets/images.lock.toml](assets/images.lock.toml) by version, digest, npm integrity, or checksum for Linux amd64 and arm64. Custom schema-v1 manifests can inherit a built-in and configure an image/build, argv-only preparation, mounts, cache scopes, ports, host services, environment and secret references, markers, and egress hosts. A custom prebuilt `image` must use an explicit non-`latest` tag or a complete `sha256` digest. It must contain the version-matched `codex-start-init` helper at `/usr/local/bin/codex-start-init`; allowlist-mode host SSH also requires `/usr/local/bin/codex-start-host-ssh`. See [environment documentation](docs/environments.md).
+
+Normal runs reuse content-addressed local builds. `--pull` fetches versioned built-in images from `${CODEX_START_IMAGE_REGISTRY:-ghcr.io/cofob}` or refreshes a custom `image` reference; custom `[build]` environments use `--rebuild` instead. `env update` copies the lock embedded in the installed binary to the user config—it does not query upstream registries.
+
+## Configuration
+
+Global settings live at `~/.config/codex-start/config.toml`. A Git repository stores private shared defaults in `<git-common-dir>/codex-start.toml`; a non-Git project uses a canonical-path hash below `~/.config/codex-start/projects`. Ordinary launches never write settings.
+
+```toml
+schema_version = 1
+
+[settings]
+environment = "rust"
+runtime = "auto"
+network = "allowlist"
+worktree = "auto"
+home = "default"
+
+[settings.secret_refs]
+DOCS_MCP_TOKEN = "docs-mcp"
+
+[settings.codex.config]
+model_reasoning_effort = "high"
+
+[settings.codex.config.mcp_servers.docs]
+url = "https://mcp.example.test/v1"
+bearer_token_env_var = "DOCS_MCP_TOKEN"
+
+[secrets.docs-mcp]
+kind = "environment"
+variable = "DOCS_MCP_TOKEN"
+```
+
+Precedence is CLI, `CODEX_START__...` variables, project, selected profile, global, environment defaults, then built-ins. `config show` renders the result and `config explain` shows each value’s source. Launcher keys are strict; `[settings.codex.config]` intentionally accepts all native/future Codex keys. The [configuration reference](docs/configuration.md) includes schema-validated examples, homes, profiles, MCP, and secret providers.
+
+`codex-start run ENV -- ...` always executes the real `codex` binary. Native `-c` overrides, the configured Codex profile, and `[settings.codex].args` are placed before the arguments after `--`; those final arguments are retained byte-for-byte and may select any Codex command or feature. `shell` is the exception: it executes the requested shell argv directly.
+
+## Network and secrets
+
+The default `allowlist` mode gives the workload only an internal network. A non-root, read-only, capability-dropped Rust sidecar is dual-homed onto a dedicated per-run outer network and forwards allowed HTTP/HTTPS and CONNECT traffic without TLS interception. Every non-health request requires a generated per-run bearer token. A loopback-only Rust bridge receives and injects that token after engine inspection, so proxy credentials never appear in configured environment variables, engine inspection, command previews, or logs. The proxy blocks private/reserved destinations unless explicitly permitted and emits structured redacted denials. `offline`, `bridge`, and `host` modes are also available.
+
+Browser opening, native MCP OAuth callbacks, SSH/GPG-agent fallbacks, declared loopback services, and automatically detected Ollama/LM Studio endpoints use Rust bridges. OAuth callback port/URL settings and final Codex `-c` overrides are coordinated with the host listener. In `allowlist` mode, Git SSH also uses an authenticated, destination-restricted host SSH bridge; `bridge` and `host` mode use the container's OpenSSH client directly. Every engine-reachable bridge endpoint authenticates with a per-run token mounted at `/run/codex-start/secrets/host-services`. `offline` disables host bridges and SSH/GPG-agent forwarding.
+
+Secrets can be read from a host environment variable, permission-checked file, argv-based command, or native keychain. Projects and environments reference trusted global provider names. Values are materialized as private files below `/run/secrets` and loaded into the child environment by the init helper, so they do not appear in TOML, engine inspection, dry-run plans, logs, or errors. See the [security model](docs/security.md).
+
+Static native Codex HTTP-header tables are intentionally rejected; configure `env_http_headers` with environment-variable names backed by global providers. Literal launcher/environment fields are for non-secret configuration only.
+
+## Codex homes and repository features
+
+`managed` homes are owned by codex-start and shared between repositories/runtimes. `host` directly mounts `~/.codex` and `~/.agents`; `path` selects explicit directories. Import/export commands provide coordinated migration. Repository `.codex/`, `.agents/skills`, and `AGENTS.md` remain in place, so Codex discovers them naturally.
+
+```console
+codex-start home create team
+codex-start home import team --from ~/.codex
+codex-start home exec team -- login
+codex-start run --home team
+```
+
+## Development and release
+
+```console
+cargo fmt --all -- --check
+cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::pedantic
+cargo run --locked --package xtask -- validate
+cargo deny check
+```
+
+CI also covers MSRV, current stable, Docker, rootless Podman, multi-architecture OCI builds, vulnerability scanning, SPDX SBOMs, provenance, and signing. The manual platform matrix is in [docs/releasing.md](docs/releasing.md).
+
+## License
+
+codex-start is licensed under GPL-3.0-or-later. See [LICENSE](LICENSE).

@@ -1,0 +1,42 @@
+[package]
+name = "codex-start"
+description = "Run Codex in reproducible Docker or Podman development environments"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+default-run = "codex-start"
+
+[[bin]]
+name = "codex-start"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+blake3.workspace = true
+clap.workspace = true
+codex-start-core = { version = "0.1.0", path = "../codex-start-core" }
+codex-start-proxy = { version = "0.1.0", path = "../codex-start-proxy" }
+fs2.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+uuid.workspace = true
+walkdir.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+
+[lints]
+workspace = true

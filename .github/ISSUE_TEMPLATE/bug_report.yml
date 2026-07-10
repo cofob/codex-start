@@ -1,0 +1,36 @@
+name: Bug report
+description: Report a reproducible codex-start defect
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include tokens, credentials, unredacted plans, or private repository content. Report security issues through a private security advisory.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal commands and configuration with values redacted.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: Paste `codex-start --output json doctor` after checking it contains no private paths you cannot share.
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options: [Docker, Podman, Both]
+    validations:
+      required: true

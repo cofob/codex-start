@@ -1,0 +1,87 @@
+schema_version = 1
+generated_at = "2026-07-10T00:00:00Z"
+
+[images.node]
+repository = "docker.io/library/node"
+tag = "24.14.1-bookworm-slim"
+index_digest = "sha256:b506e7321f176aae77317f99d67a24b272c1f09f1d10f1761f2773447d8da26c"
+
+[images.node.platforms."linux/amd64"]
+digest = "sha256:e484ae3f1e3c378021c967fd42254f343c302a9263e412280eac32bf5bca7008"
+
+[images.node.platforms."linux/arm64"]
+digest = "sha256:fdf1c60c166aaf02dd124c08a1c67b5df800766d3c00661427b84d26138a5432"
+
+[images.rust]
+repository = "docker.io/library/rust"
+tag = "1.97.0-bookworm"
+index_digest = "sha256:7d0723df719e7f213b69dc7c8c595985c3f4b060cfbee4f7bc0e347a86fe3b6a"
+
+[images.rust.platforms."linux/amd64"]
+digest = "sha256:67f7f3e80896194e06f56bdf60367c83c478470572e44fb6844ff500bd9180a1"
+
+[images.rust.platforms."linux/arm64"]
+digest = "sha256:4415bccc5e457b8df42beb8080b0646105944f87aaefde44f02dcef1e9225339"
+
+[images.debian]
+repository = "docker.io/library/debian"
+tag = "bookworm-slim"
+index_digest = "sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df"
+
+[images.debian.platforms."linux/amd64"]
+digest = "sha256:1def178129dfb5f24db43afbf2fcac04530012e3264ba4ff81c71184e17a9ee4"
+
+[images.debian.platforms."linux/arm64"]
+digest = "sha256:675b032d19e294c9eb2525b24ee63e6dc718854a481c6fd6f5e0aefcaf8208a1"
+
+[artifacts.codex]
+kind = "npm"
+version = "0.142.5"
+url = "https://registry.npmjs.org/@openai/codex/-/codex-0.142.5.tgz"
+integrity = "sha512-WQEpD7l3k68eIAP0aq28EdR18ENBAf8DyprzFhzNwCOQJSv4nHzpwT8Fl30IJacprko2ZCmUBZjM2u941l2yLw=="
+sha512 = "5901290fb97793af1e2003f46aadbc11d475f0434101ff03ca9af3161ccdc02390252bf89c7ce9c13f05977d0825a729ae4a366429940598ccdaef78d65db22f"
+
+[artifacts.codex.platforms."linux/amd64"]
+npm_version = "0.142.5-linux-x64"
+url = "https://registry.npmjs.org/@openai/codex/-/codex-0.142.5-linux-x64.tgz"
+integrity = "sha512-pxY+d3NgNE57Y/MApD3/TZUAygxJN6I9h3ZeDUwe67mxWjUxsuapxMRFTKSznCalYbRAeZp752+AAXmUbmguEg=="
+sha512 = "a7163e777360344e7b63f300a43dff4d9500ca0c4937a23d87765e0d4c1eebb9b15a3531b2e6a9c4c4454ca4b39c26a561b440799a7be76f800179946e682e12"
+
+[artifacts.codex.platforms."linux/arm64"]
+npm_version = "0.142.5-linux-arm64"
+url = "https://registry.npmjs.org/@openai/codex/-/codex-0.142.5-linux-arm64.tgz"
+integrity = "sha512-77ka5PSnm5HdxdBT99IwntCasmbqevlS0eiC0AtEb6ZXCLkim2gm0AWm+jNYy0EhbssvNK+KghayWo34HMgXeA=="
+sha512 = "efb91ae4f4a79b91ddc5d053f7d2309ed09ab266ea7af952d1e882d00b446fa65708b9229b6826d005a6fa3358cb41216ecb2f34af8a8216b25a8df81cc81778"
+
+[artifacts.uv]
+kind = "archive"
+version = "0.11.28"
+
+[artifacts.uv.platforms."linux/amd64"]
+target = "x86_64-unknown-linux-gnu"
+url = "https://github.com/astral-sh/uv/releases/download/0.11.28/uv-x86_64-unknown-linux-gnu.tar.gz"
+sha256 = "e490a6464492183c5d4534a5527fb4440f7f2bb2f228162ad7e4afe076dc0224"
+
+[artifacts.uv.platforms."linux/arm64"]
+target = "aarch64-unknown-linux-gnu"
+url = "https://github.com/astral-sh/uv/releases/download/0.11.28/uv-aarch64-unknown-linux-gnu.tar.gz"
+sha256 = "03e9fe0a81b0718d0bc84625de3885df6cc3f89a8b6af6121d6b9f6113fb6533"
+
+[artifacts.just]
+kind = "archive"
+version = "1.55.1"
+
+[artifacts.just.platforms."linux/amd64"]
+target = "x86_64-unknown-linux-musl"
+url = "https://github.com/casey/just/releases/download/1.55.1/just-1.55.1-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "b0ef600f0df20d5ae91ae931627c499fc52b477ffe5f5ea7b7b3ec616b16c778"
+
+[artifacts.just.platforms."linux/arm64"]
+target = "aarch64-unknown-linux-musl"
+url = "https://github.com/casey/just/releases/download/1.55.1/just-1.55.1-aarch64-unknown-linux-musl.tar.gz"
+sha256 = "b0ee814c9656427408e339893541e30d9027828686839499b2a2a34dd61ad173"
+
+[toolchains.rust]
+version = "1.97.0"
+profile = "default"
+components = ["clippy", "rustfmt", "rust-src", "rust-analyzer", "llvm-tools-preview"]

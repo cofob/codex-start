@@ -1,0 +1,48 @@
+[package]
+name = "codex-start-proxy"
+description = "Rust egress proxy and authenticated transport helpers for codex-start"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codex_start_proxy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "codex-start-sidecar"
+path = "src/bin/sidecar.rs"
+
+[[bin]]
+name = "codex-start-init"
+path = "src/bin/init.rs"
+
+[[bin]]
+name = "codex-start-host-ssh"
+path = "src/bin/host-ssh.rs"
+
+[[bin]]
+name = "codex-start-ssh"
+path = "src/bin/ssh.rs"
+
+[dependencies]
+base64.workspace = true
+clap.workspace = true
+idna.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
