@@ -9,6 +9,7 @@ use std::{
 };
 
 use codex_start_core::ProjectIdentity;
+use serde::Serialize;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
@@ -65,6 +66,18 @@ pub struct Workspace {
     pub created: bool,
     /// Whether this invocation created the branch.
     pub branch_created: bool,
+}
+
+/// Read-only metadata for one verified codex-start-managed worktree.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ManagedWorktree {
+    pub name: String,
+    pub branch: String,
+    pub head: String,
+    pub path: PathBuf,
+    pub dirty: bool,
+    pub modified_unix_seconds: u64,
+    pub current: bool,
 }
 
 /// One immutable source selected for an agent-assisted merge.
@@ -448,6 +461,71 @@ impl GitRepo {
         let prefix = normalize_branch_prefix(branch_prefix)?;
         self.verify_owned_worktree(&selected, &prefix, None, &project_dir)?;
         Ok(selected)
+    }
+
+    /// List verified codex-start-managed worktrees for this repository.
+    pub fn list_workspaces(
+        &self,
+        base_dir: &Path,
+        branch_prefix: &str,
+    ) -> Result<Vec<ManagedWorktree>> {
+        let project_dir = base_dir.join(format!("{}-{}", self.project_name, self.project_id));
+        if !project_dir.exists() {
+            return Ok(Vec::new());
+        }
+        if !project_dir.is_dir() {
+            return Err(HostError::UnsafePath {
+                path: project_dir,
+                reason: "managed worktree project path must be a directory".to_owned(),
+            });
+        }
+        let prefix = normalize_branch_prefix(branch_prefix)?;
+        let current_root = canonical_or_original(&self.root);
+        let mut worktrees = Vec::new();
+        for entry in
+            fs::read_dir(&project_dir).map_err(|source| HostError::io(&project_dir, source))?
+        {
+            let entry = entry.map_err(|source| HostError::io(&project_dir, source))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|source| HostError::io(entry.path(), source))?;
+            if !file_type.is_dir() {
+                continue;
+            }
+            let path = entry.path();
+            let candidate = self.verify_owned_worktree(&path, &prefix, None, &project_dir)?;
+            let metadata = entry
+                .metadata()
+                .map_err(|source| HostError::io(&path, source))?;
+            let modified_unix_seconds = metadata
+                .modified()
+                .unwrap_or(UNIX_EPOCH)
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let branch = candidate.current_branch()?.ok_or_else(|| {
+                HostError::Git(format!(
+                    "managed worktree {} has detached HEAD",
+                    path.display()
+                ))
+            })?;
+            worktrees.push(ManagedWorktree {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                branch,
+                head: git_text(&path, ["rev-parse", "HEAD"])?,
+                dirty: has_changes(&path)?,
+                current: canonical_or_original(&path) == current_root,
+                path,
+                modified_unix_seconds,
+            });
+        }
+        worktrees.sort_by(|left, right| {
+            right
+                .modified_unix_seconds
+                .cmp(&left.modified_unix_seconds)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(worktrees)
     }
 
     /// Run interactive `git commit` in a selected worktree.
@@ -1023,6 +1101,60 @@ mod tests {
                 .expect("cleanup")
         );
         assert!(workspace.host_root.exists());
+    }
+
+    #[test]
+    fn lists_verified_worktrees_with_dirty_and_current_state() {
+        let repo_dir = repository();
+        let base = tempfile::tempdir().expect("worktree base");
+        let repo = GitRepo::require(repo_dir.path()).expect("discover");
+        assert!(
+            repo.list_workspaces(base.path(), "codex/")
+                .unwrap()
+                .is_empty()
+        );
+
+        let first = repo
+            .prepare_workspace(WorktreeMode::Always, Some("first"), base.path(), "codex/")
+            .expect("first worktree");
+        let second = repo
+            .prepare_workspace(WorktreeMode::Always, Some("second"), base.path(), "codex/")
+            .expect("second worktree");
+        fs::write(second.host_root.join("dirty.txt"), "dirty\n").expect("dirty worktree");
+
+        let managed_repo = GitRepo::require(&first.host_root).expect("managed repo");
+        let listed = managed_repo
+            .list_workspaces(base.path(), "codex/")
+            .expect("list worktrees");
+        assert_eq!(listed.len(), 2);
+        let first_record = listed
+            .iter()
+            .find(|worktree| worktree.name == "first")
+            .expect("first record");
+        assert!(first_record.current);
+        assert_eq!(first_record.branch, "codex/first");
+        assert!(!first_record.dirty);
+        assert_eq!(first_record.head.len(), 40);
+        assert!(
+            listed
+                .iter()
+                .any(|worktree| worktree.name == "second" && worktree.dirty)
+        );
+        let json = serde_json::to_value(first_record).expect("serialize record");
+        assert_eq!(json["current"], true);
+        assert_eq!(json["name"], "first");
+    }
+
+    #[test]
+    fn listing_rejects_foreign_directories_in_managed_project_scope() {
+        let repo_dir = repository();
+        let base = tempfile::tempdir().expect("worktree base");
+        let repo = GitRepo::require(repo_dir.path()).expect("discover");
+        let project_dir = base
+            .path()
+            .join(format!("{}-{}", repo.project_name, repo.project_id));
+        fs::create_dir_all(project_dir.join("foreign")).expect("foreign directory");
+        assert!(repo.list_workspaces(base.path(), "codex/").is_err());
     }
 
     #[test]

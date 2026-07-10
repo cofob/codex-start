@@ -17,6 +17,7 @@ mod host_services;
 mod init_spec;
 mod launch_plan;
 mod locking;
+mod manager_tui;
 mod networking;
 mod paths;
 mod runtime;

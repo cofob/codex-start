@@ -46,6 +46,7 @@ use crate::{
         PlannedSessionKind, RunRequestContext, SessionMetadata,
     },
     locking::RunLock,
+    manager_tui::{SessionManagerAction, WorktreeManagerAction},
     networking::{
         EgressAuthentication, NetworkOptions, NetworkSession, limited_name, sidecar_image_tag,
     },
@@ -81,13 +82,19 @@ pub async fn run(cli: Cli) -> Result<u8> {
             merge_legacy_run_options(&mut args.options, &cli.legacy)?;
             execute_shell(&context, args, output).await
         }
-        Some(Command::Worktree(args)) => execute_worktree(&context, args.command, output),
+        Some(Command::Worktree(args)) => match args.command {
+            Some(command) => execute_worktree(&context, command, output),
+            None => execute_worktree_manager(&context, output),
+        },
         Some(Command::Resources(args)) => {
             execute_resources(&context, args.runtime, args.command, output)
         }
         Some(Command::Env(args)) => execute_environment(&context, args.command, output),
         Some(Command::Home(args)) => execute_home(&context, args.command, output).await,
-        Some(Command::Session(args)) => execute_session(&context, args.command, output).await,
+        Some(Command::Session(args)) => match args.command {
+            Some(command) => execute_session(&context, command, output).await,
+            None => execute_session_manager(&context, output),
+        },
         Some(Command::Config(args)) => execute_config(&context, args.command, output),
         Some(Command::Doctor(args)) => execute_doctor(&context, args, output),
         Some(Command::External(values)) => {
@@ -339,6 +346,76 @@ async fn execute_session(
         }
         command => crate::session::execute(context, command, output),
     }
+}
+
+fn execute_session_manager(context: &ConfigContext, output: OutputFormat) -> Result<u8> {
+    let mut notice = None;
+    loop {
+        match crate::manager_tui::run_sessions(context, output, notice.take())? {
+            SessionManagerAction::Quit => return Ok(0),
+            SessionManagerAction::Attach(id) => {
+                return crate::session::execute(
+                    context,
+                    SessionCommand::Attach {
+                        selection: crate::cli::SessionSelection {
+                            session: id.to_string(),
+                        },
+                        no_refresh_ssh: false,
+                    },
+                    output,
+                );
+            }
+            SessionManagerAction::Logs(id, follow) => {
+                return crate::session::execute(
+                    context,
+                    SessionCommand::Logs {
+                        selection: crate::cli::SessionSelection {
+                            session: id.to_string(),
+                        },
+                        follow,
+                    },
+                    output,
+                );
+            }
+            SessionManagerAction::Refresh(id) => {
+                notice = Some(manager_session_mutation(
+                    context,
+                    id,
+                    crate::session::SessionMutation::Refresh,
+                ));
+            }
+            SessionManagerAction::Stop(id) => {
+                notice = Some(manager_session_mutation(
+                    context,
+                    id,
+                    crate::session::SessionMutation::Stop,
+                ));
+            }
+            SessionManagerAction::Restart(id) => {
+                notice = Some(manager_session_mutation(
+                    context,
+                    id,
+                    crate::session::SessionMutation::Restart,
+                ));
+            }
+            SessionManagerAction::Remove(id) => {
+                notice = Some(manager_session_mutation(
+                    context,
+                    id,
+                    crate::session::SessionMutation::Remove,
+                ));
+            }
+        }
+    }
+}
+
+fn manager_session_mutation(
+    context: &ConfigContext,
+    id: Uuid,
+    mutation: crate::session::SessionMutation,
+) -> String {
+    crate::session::mutate(context, id, mutation)
+        .unwrap_or_else(|error| format!("Action failed: {error}"))
 }
 
 const MERGE_BUNDLE_CONTAINER: &str = "/run/codex-start/merge-agent";
@@ -2660,6 +2737,34 @@ fn execute_worktree(
         .clone()
         .unwrap_or_else(|| context.paths.worktrees_dir());
     match command {
+        WorktreeCommand::List => {
+            let worktrees = repo.list_workspaces(&base, &resolved.config.git.branch_prefix)?;
+            let human = if worktrees.is_empty() {
+                "No codex-start managed worktrees.".to_owned()
+            } else {
+                worktrees
+                    .iter()
+                    .map(|worktree| {
+                        format!(
+                            "{}\t{}\t{}\t{}",
+                            worktree.name,
+                            if worktree.current {
+                                "current"
+                            } else if worktree.dirty {
+                                "dirty"
+                            } else {
+                                "clean"
+                            },
+                            worktree.branch,
+                            worktree.path.display()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            emit(output, &worktrees, &human)?;
+            Ok(0)
+        }
         WorktreeCommand::Commit(selection) => {
             let source = repo.select_workspace(
                 &base,
@@ -2721,6 +2826,92 @@ fn execute_worktree(
             Ok(0)
         }
     }
+}
+
+fn execute_worktree_manager(context: &ConfigContext, output: OutputFormat) -> Result<u8> {
+    let mut notice = None;
+    loop {
+        match crate::manager_tui::run_worktrees(context, output, notice.take())? {
+            WorktreeManagerAction::Quit => return Ok(0),
+            WorktreeManagerAction::Commit(name) => {
+                return execute_worktree(
+                    context,
+                    WorktreeCommand::Commit(crate::cli::WorktreeSelection { name: Some(name) }),
+                    output,
+                );
+            }
+            WorktreeManagerAction::Squash(name) => {
+                return execute_worktree(
+                    context,
+                    WorktreeCommand::Squash(crate::cli::WorktreeSelection { name: Some(name) }),
+                    output,
+                );
+            }
+            WorktreeManagerAction::Edit(name) => {
+                return execute_worktree(
+                    context,
+                    WorktreeCommand::Edit(crate::cli::WorktreeSelection { name: Some(name) }),
+                    output,
+                );
+            }
+            WorktreeManagerAction::Move(name) => {
+                notice = Some(manager_move_worktree(context, &name));
+            }
+            WorktreeManagerAction::Cleanup => {
+                notice = Some(manager_cleanup_worktrees(context));
+            }
+        }
+    }
+}
+
+fn manager_move_worktree(context: &ConfigContext, name: &str) -> String {
+    let result = (|| {
+        let repo = GitRepo::require(&context.cwd)?;
+        let resolved = context.resolve(None)?;
+        let base = resolved
+            .config
+            .git
+            .worktree_base
+            .clone()
+            .unwrap_or_else(|| context.paths.worktrees_dir());
+        let source =
+            repo.select_workspace(&base, Some(name), &resolved.config.git.branch_prefix)?;
+        repo.move_changes(&source)
+    })();
+    result.map_or_else(
+        |error| format!("Action failed: {error}"),
+        |()| format!("Applied changes from {name:?} without committing"),
+    )
+}
+
+fn manager_cleanup_worktrees(context: &ConfigContext) -> String {
+    let result = (|| {
+        let repo = GitRepo::require(&context.cwd)?;
+        let resolved = context.resolve(None)?;
+        let base = resolved
+            .config
+            .git
+            .worktree_base
+            .clone()
+            .unwrap_or_else(|| context.paths.worktrees_dir());
+        let active = SessionStore::for_context(context)?
+            .list()?
+            .into_iter()
+            .filter(|session| session.project_id == repo.project_id && session.status.is_live())
+            .map(|session| session.id.to_string())
+            .collect::<Vec<_>>();
+        if !active.is_empty() {
+            return Err(HostError::Runtime(format!(
+                "active sessions protect their worktrees from cleanup: {}; stop or remove them first",
+                active.join(", ")
+            )));
+        }
+        repo.cleanup_owned(&base, &resolved.config.git.branch_prefix, false)
+    })();
+    result.map_or_else(
+        |error| format!("Action failed: {error}"),
+        |(worktrees, branches)| format!("Removed {worktrees} worktrees and {branches} branches"),
+    )
 }
 
 fn execute_resources(

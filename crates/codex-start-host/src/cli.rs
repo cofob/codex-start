@@ -270,14 +270,16 @@ pub struct ShellArgs {
 /// Worktree command group.
 #[derive(Clone, Debug, Args)]
 pub struct WorktreeArgs {
-    /// Worktree operation.
+    /// Worktree operation; omit to open the interactive manager.
     #[command(subcommand)]
-    pub command: WorktreeCommand,
+    pub command: Option<WorktreeCommand>,
 }
 
 /// Worktree lifecycle operations.
 #[derive(Clone, Debug, Subcommand)]
 pub enum WorktreeCommand {
+    /// List managed worktrees for the current project.
+    List,
     /// Run interactive Git commit in a selected worktree.
     Commit(WorktreeSelection),
     /// Autosave and squash a selected worktree into the current branch.
@@ -415,9 +417,9 @@ pub enum HomeCommand {
 /// Persistent-session command group.
 #[derive(Clone, Debug, Args)]
 pub struct SessionArgs {
-    /// Session operation.
+    /// Session operation; omit to open the interactive manager.
     #[command(subcommand)]
-    pub command: SessionCommand,
+    pub command: Option<SessionCommand>,
 }
 
 /// Persistent-session lifecycle operations.
@@ -701,7 +703,9 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, Command, HomeCommand, PortProtocol, PortSpec, SessionCommand};
+    use super::{
+        Cli, Command, HomeCommand, PortProtocol, PortSpec, SessionCommand, WorktreeCommand,
+    };
 
     #[test]
     fn parses_explicit_passthrough_commands_without_clap_assertions() {
@@ -762,7 +766,7 @@ mod tests {
         assert!(matches!(
             attach.command,
             Some(Command::Session(args))
-                if matches!(args.command, SessionCommand::Attach { no_refresh_ssh: true, .. })
+                if matches!(args.command, Some(SessionCommand::Attach { no_refresh_ssh: true, .. }))
         ));
 
         let start = Cli::try_parse_from([
@@ -778,7 +782,29 @@ mod tests {
         assert!(matches!(
             start.command,
             Some(Command::Session(args))
-                if matches!(&args.command, SessionCommand::Start(run) if run.codex_args == ["exec", "task"])
+                if matches!(&args.command, Some(SessionCommand::Start(run)) if run.codex_args == ["exec", "task"])
+        ));
+    }
+
+    #[test]
+    fn bare_session_and_worktree_groups_open_managers() {
+        let session = Cli::try_parse_from(["codex-start", "session"]).expect("bare session");
+        assert!(matches!(
+            session.command,
+            Some(Command::Session(args)) if args.command.is_none()
+        ));
+
+        let worktree = Cli::try_parse_from(["codex-start", "worktree"]).expect("bare worktree");
+        assert!(matches!(
+            worktree.command,
+            Some(Command::Worktree(args)) if args.command.is_none()
+        ));
+
+        let list = Cli::try_parse_from(["codex-start", "worktree", "list"]).expect("worktree list");
+        assert!(matches!(
+            list.command,
+            Some(Command::Worktree(args))
+                if matches!(args.command, Some(WorktreeCommand::List))
         ));
     }
 

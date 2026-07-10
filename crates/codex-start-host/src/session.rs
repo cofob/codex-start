@@ -54,6 +54,15 @@ pub enum SessionStatus {
     Stopped,
 }
 
+/// Short session mutations used by the interactive manager.
+#[derive(Clone, Copy, Debug)]
+pub enum SessionMutation {
+    Refresh,
+    Stop,
+    Restart,
+    Remove,
+}
+
 impl SessionStatus {
     #[must_use]
     pub const fn is_live(self) -> bool {
@@ -380,6 +389,30 @@ pub fn execute(
     }
 }
 
+/// Execute a short lifecycle operation without writing command output.
+pub fn mutate(context: &ConfigContext, id: Uuid, mutation: SessionMutation) -> Result<String> {
+    let store = SessionStore::for_context(context)?;
+    let record = store.read(id)?;
+    match mutation {
+        SessionMutation::Refresh => {
+            refresh_ssh(&store, &record)?;
+            Ok(format!("Refreshed host integrations for {}", record.alias))
+        }
+        SessionMutation::Stop => {
+            stop_record(&store, &record)?;
+            Ok(format!("Stopped session {}", record.alias))
+        }
+        SessionMutation::Restart => {
+            restart_record(&store, &record)?;
+            Ok(format!("Restarted session {}", record.alias))
+        }
+        SessionMutation::Remove => {
+            remove_record(&store, &record, false)?;
+            Ok(format!("Removed session {}", record.alias))
+        }
+    }
+}
+
 fn list(store: &SessionStore, project_id: &str, all: bool, output: OutputFormat) -> Result<u8> {
     let records = store
         .list()?
@@ -550,13 +583,7 @@ pub fn attach_record(store: &SessionStore, record: &SessionRecord) -> Result<u8>
 }
 
 fn stop(store: &SessionStore, record: &SessionRecord, output: OutputFormat) -> Result<u8> {
-    let runtime = runtime(record)?;
-    for container in owned_session_containers(&runtime, record)? {
-        if runtime.container_state(&container)? == Some(true) {
-            runtime.stop_container(&container)?;
-        }
-    }
-    let record = store.update(record.id, |current| current.status = SessionStatus::Stopped)?;
+    let record = stop_record(store, record)?;
     emit(
         output,
         &record.public_value(),
@@ -565,18 +592,18 @@ fn stop(store: &SessionStore, record: &SessionRecord, output: OutputFormat) -> R
     Ok(0)
 }
 
-fn restart(store: &SessionStore, record: &SessionRecord, output: OutputFormat) -> Result<u8> {
-    if record.kind != SessionKind::Interactive {
-        return Err(HostError::Usage(
-            "non-interactive jobs are never replayed automatically".to_owned(),
-        ));
-    }
+fn stop_record(store: &SessionStore, record: &SessionRecord) -> Result<SessionRecord> {
     let runtime = runtime(record)?;
-    require_owned(&runtime, record)?;
-    start_owned_session_containers(&runtime, record)?;
-    let record = store.update(record.id, |current| {
-        current.status = SessionStatus::Detached;
-    })?;
+    for container in owned_session_containers(&runtime, record)? {
+        if runtime.container_state(&container)? == Some(true) {
+            runtime.stop_container(&container)?;
+        }
+    }
+    store.update(record.id, |current| current.status = SessionStatus::Stopped)
+}
+
+fn restart(store: &SessionStore, record: &SessionRecord, output: OutputFormat) -> Result<u8> {
+    let record = restart_record(store, record)?;
     emit(
         output,
         &record.public_value(),
@@ -585,12 +612,36 @@ fn restart(store: &SessionStore, record: &SessionRecord, output: OutputFormat) -
     Ok(0)
 }
 
+fn restart_record(store: &SessionStore, record: &SessionRecord) -> Result<SessionRecord> {
+    if record.kind != SessionKind::Interactive {
+        return Err(HostError::Usage(
+            "non-interactive jobs are never replayed automatically".to_owned(),
+        ));
+    }
+    let runtime = runtime(record)?;
+    require_owned(&runtime, record)?;
+    start_owned_session_containers(&runtime, record)?;
+    store.update(record.id, |current| {
+        current.status = SessionStatus::Detached;
+    })
+}
+
 fn remove(
     store: &SessionStore,
     record: &SessionRecord,
     force: bool,
     output: OutputFormat,
 ) -> Result<u8> {
+    remove_record(store, record, force)?;
+    emit(
+        output,
+        &serde_json::json!({"removed": record.id}),
+        &format!("removed session {}", record.id),
+    )?;
+    Ok(0)
+}
+
+fn remove_record(store: &SessionStore, record: &SessionRecord, force: bool) -> Result<()> {
     let runtime = runtime(record)?;
     let containers = owned_session_containers(&runtime, record)?;
     if !force
@@ -632,12 +683,7 @@ fn remove(
         runtime.remove_volume(&volume, true)?;
     }
     store.remove(record.id)?;
-    emit(
-        output,
-        &serde_json::json!({"removed": record.id}),
-        &format!("removed session {}", record.id),
-    )?;
-    Ok(0)
+    Ok(())
 }
 
 fn recovery(
