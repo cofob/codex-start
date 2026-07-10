@@ -1486,6 +1486,7 @@ fn safe_archive_path(path: &Path) -> bool {
             .all(|component| matches!(component, Component::Normal(_)))
 }
 
+#[cfg(windows)]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct WindowsApplyState {
@@ -1502,7 +1503,7 @@ fn install_portable_windows(
     restart: bool,
 ) -> Result<()> {
     let binary = extract_zip_binary(archive, temporary.path())?;
-    let directory = temporary.keep();
+    let directory = temporary.into_path();
     let source = directory.join("codex-start.new.exe");
     fs::rename(&binary, &source).map_err(|error| HostError::io(&source, error))?;
     let helper = directory.join("codex-start-update-helper.exe");

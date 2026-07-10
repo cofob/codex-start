@@ -84,7 +84,7 @@ pub fn run_sessions(
     );
     let mut state = SessionState::new(store.list()?, project_id, notice);
     let mut outcome = SessionManagerAction::Quit;
-    ratatui::run(|terminal| session_loop(terminal, &store, &mut state, &mut outcome))
+    run_terminal(|terminal| session_loop(terminal, &store, &mut state, &mut outcome))
         .map_err(|source| HostError::io("session manager terminal", source))?;
     Ok(outcome)
 }
@@ -106,11 +106,21 @@ pub fn run_worktrees(
     let prefix = resolved.config.git.branch_prefix;
     let mut state = WorktreeState::new(repo.list_workspaces(&base, &prefix)?, notice);
     let mut outcome = WorktreeManagerAction::Quit;
-    ratatui::run(|terminal| {
+    run_terminal(|terminal| {
         worktree_loop(terminal, &repo, &base, &prefix, &mut state, &mut outcome)
     })
     .map_err(|source| HostError::io("worktree manager terminal", source))?;
     Ok(outcome)
+}
+
+fn run_terminal(
+    run: impl FnOnce(&mut ratatui::DefaultTerminal) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut terminal = ratatui::try_init()?;
+    let result = run(&mut terminal);
+    let restore = ratatui::try_restore();
+    result?;
+    restore
 }
 
 fn validate_terminal(output: OutputFormat, list_command: &str) -> Result<()> {
@@ -388,14 +398,14 @@ fn handle_session_key(
             KeyCode::Down | KeyCode::Char('j') => move_selection(selected, items.len(), 1),
             KeyCode::Up | KeyCode::Char('k') => move_selection(selected, items.len(), -1),
             KeyCode::Enter => {
-                if let Some(item) = items.get(*selected).cloned() {
-                    if let Some(action) = item.action {
-                        if let Some(prompt) = item.confirm {
-                            state.mode = InputMode::Confirm { prompt, action };
-                        } else {
-                            *outcome = action;
-                            return true;
-                        }
+                if let Some(item) = items.get(*selected).cloned()
+                    && let Some(action) = item.action
+                {
+                    if let Some(prompt) = item.confirm {
+                        state.mode = InputMode::Confirm { prompt, action };
+                    } else {
+                        *outcome = action;
+                        return true;
                     }
                 }
             }
@@ -479,14 +489,14 @@ fn handle_worktree_key(
             KeyCode::Down | KeyCode::Char('j') => move_selection(selected, items.len(), 1),
             KeyCode::Up | KeyCode::Char('k') => move_selection(selected, items.len(), -1),
             KeyCode::Enter => {
-                if let Some(item) = items.get(*selected).cloned() {
-                    if let Some(action) = item.action {
-                        if let Some(prompt) = item.confirm {
-                            state.mode = InputMode::Confirm { prompt, action };
-                        } else {
-                            *outcome = action;
-                            return true;
-                        }
+                if let Some(item) = items.get(*selected).cloned()
+                    && let Some(action) = item.action
+                {
+                    if let Some(prompt) = item.confirm {
+                        state.mode = InputMode::Confirm { prompt, action };
+                    } else {
+                        *outcome = action;
+                        return true;
                     }
                 }
             }
@@ -685,7 +695,7 @@ fn render_sessions(frame: &mut Frame<'_>, state: &SessionState) {
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .block(Block::default().borders(Borders::ALL).title(title))
-    .row_highlight_style(
+    .highlight_style(
         Style::default()
             .bg(Color::DarkGray)
             .add_modifier(Modifier::BOLD),
@@ -740,7 +750,7 @@ fn render_worktrees(frame: &mut Frame<'_>, state: &WorktreeState) {
             .borders(Borders::ALL)
             .title(" Managed worktrees "),
     )
-    .row_highlight_style(
+    .highlight_style(
         Style::default()
             .bg(Color::DarkGray)
             .add_modifier(Modifier::BOLD),

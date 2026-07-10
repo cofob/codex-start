@@ -14,7 +14,6 @@ allow_hosts = [
   "*.openai.com",
   "*.oaistatic.com",
   "*.oaiusercontent.com",
-  "api.deepseek.com",
   "deb.debian.org",
   "security.debian.org",
   "github.com",

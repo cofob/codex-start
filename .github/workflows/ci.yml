@@ -592,8 +592,8 @@ jobs:
               features list >/dev/null
             "${launcher}" --config "${config}" run generic \
               --network offline --no-worktree --no-tty --ephemeral -- \
-              -c 'mcp_servers."ci.server".command="printf"' \
-              -c 'mcp_servers."ci.server".args=[""]' mcp get ci.server >/dev/null
+              -c 'mcp_servers.ci-server.command="printf"' \
+              -c 'mcp_servers.ci-server.args=[""]' mcp get ci-server >/dev/null
             "${launcher}" --config "${config}" shell generic \
               --network offline --no-worktree --no-tty -- \
               sh -euc 'test -f AGENTS.md; test -d /home/codex/.agents/skills; test -d /home/codex/.agents/plugins; test "$(id -u)" = "$(stat -c %u .)"'

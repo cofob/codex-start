@@ -630,6 +630,9 @@ fn ensure_no_symbolic_link_components(path: &Path) -> Result<()> {
             return Err(unsafe_path(path, "parent traversal is not allowed"));
         }
         current.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_) | Component::RootDir) {
+            continue;
+        }
         if trusted_prefix
             .as_ref()
             .is_some_and(|trusted| trusted.starts_with(&current))
