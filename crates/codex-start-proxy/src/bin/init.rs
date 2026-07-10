@@ -385,12 +385,12 @@ fn run_tcp_bridge(args: BridgeArgs) -> Result<(), AnyError> {
 }
 
 fn run_unix_bridge(args: UnixBridgeArgs) -> Result<(), AnyError> {
-    let listener = bind_unix_listener(&args.listen)?;
     let token = AuthToken::from_file(&args.token_file)?;
     if let Some(proxy) = args.proxy {
         let target = Authority::parse(&args.remote, None)?;
         let proxy_token = load_optional_token(args.proxy_token_file.as_deref())?;
         runtime()?.block_on(async move {
+            let listener = bind_unix_listener(&args.listen)?;
             let result = serve_unix_authenticated_connect_bridge(
                 listener,
                 proxy,
@@ -406,6 +406,7 @@ fn run_unix_bridge(args: UnixBridgeArgs) -> Result<(), AnyError> {
         })?;
     } else {
         runtime()?.block_on(async move {
+            let listener = bind_unix_listener(&args.listen)?;
             let result = serve_unix_bridge(
                 listener,
                 args.remote,
