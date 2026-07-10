@@ -15,10 +15,7 @@ jobs:
   supply-chain:
     runs-on: ubuntu-24.04
     permissions:
-      actions: read
       contents: read
-      security-events: write
-      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -31,6 +28,16 @@ jobs:
         with:
           scan-args: |-
             --lockfile=Cargo.lock
+
+  scorecard:
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
       - uses: ossf/scorecard-action@v2.4.0
         if: github.event.repository.private == false
         with:

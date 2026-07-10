@@ -2464,7 +2464,8 @@ mod tests {
         let root = directory_path.join("state/codex-start");
         let metadata = std::fs::metadata(&directory_path).unwrap();
 
-        let report = prepare_ownership(&[root.clone()], metadata.uid(), metadata.gid()).unwrap();
+        let report =
+            prepare_ownership(std::slice::from_ref(&root), metadata.uid(), metadata.gid()).unwrap();
 
         assert!(root.is_dir());
         assert_eq!(report.changed, 1);

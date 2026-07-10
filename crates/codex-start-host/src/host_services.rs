@@ -1493,23 +1493,18 @@ mod tests {
         let executable = root.join("fake-docker");
         #[cfg(windows)]
         let executable = root.join("fake-docker.cmd");
+        let pending = root.join("fake-docker.pending");
         #[cfg(unix)]
-        fs::write(
-            &executable,
-            b"#!/bin/sh\nif [ \"$1\" = version ]; then echo 29.0.0; exit 0; fi\ncase \"$*\" in *--help*) echo --add-host --cap-add --cap-drop --label --mount --network --network-alias --read-only --security-opt --userns --internal --alias --filter --format;; esac\nexit 0\n",
-        )
-        .unwrap();
+        let contents: &[u8] = b"#!/bin/sh\nif [ \"$1\" = version ]; then echo 29.0.0; exit 0; fi\ncase \"$*\" in *--help*) echo --add-host --cap-add --cap-drop --label --mount --network --network-alias --read-only --security-opt --userns --internal --alias --filter --format;; esac\nexit 0\n";
         #[cfg(windows)]
-        fs::write(
-            &executable,
-            b"@echo off\r\nif \"%~1\"==\"version\" (\r\n  echo 29.0.0\r\n  exit /b 0\r\n)\r\nif \"%~2\"==\"--help\" goto help\r\nif \"%~3\"==\"--help\" goto help\r\nexit /b 0\r\n:help\r\necho --add-host --cap-add --cap-drop --label --mount --network --network-alias --read-only --security-opt --userns --internal --alias --filter --format\r\nexit /b 0\r\n",
-        )
-        .unwrap();
+        let contents: &[u8] = b"@echo off\r\nif \"%~1\"==\"version\" (\r\n  echo 29.0.0\r\n  exit /b 0\r\n)\r\nif \"%~2\"==\"--help\" goto help\r\nif \"%~3\"==\"--help\" goto help\r\nexit /b 0\r\n:help\r\necho --add-host --cap-add --cap-drop --label --mount --network --network-alias --read-only --security-opt --userns --internal --alias --filter --format\r\nexit /b 0\r\n";
+        fs::write(&pending, contents).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::set_permissions(&pending, fs::Permissions::from_mode(0o700)).unwrap();
         }
+        fs::rename(pending, &executable).unwrap();
         Runtime::detect(RuntimeKind::Docker, Some(executable.as_os_str())).unwrap()
     }
 
