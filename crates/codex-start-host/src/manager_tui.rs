@@ -84,7 +84,7 @@ pub fn run_sessions(
     );
     let mut state = SessionState::new(store.list()?, project_id, notice);
     let mut outcome = SessionManagerAction::Quit;
-    run_terminal(|terminal| session_loop(terminal, &store, &mut state, &mut outcome))
+    ratatui::run(|terminal| session_loop(terminal, &store, &mut state, &mut outcome))
         .map_err(|source| HostError::io("session manager terminal", source))?;
     Ok(outcome)
 }
@@ -106,21 +106,11 @@ pub fn run_worktrees(
     let prefix = resolved.config.git.branch_prefix;
     let mut state = WorktreeState::new(repo.list_workspaces(&base, &prefix)?, notice);
     let mut outcome = WorktreeManagerAction::Quit;
-    run_terminal(|terminal| {
+    ratatui::run(|terminal| {
         worktree_loop(terminal, &repo, &base, &prefix, &mut state, &mut outcome)
     })
     .map_err(|source| HostError::io("worktree manager terminal", source))?;
     Ok(outcome)
-}
-
-fn run_terminal(
-    run: impl FnOnce(&mut ratatui::DefaultTerminal) -> io::Result<()>,
-) -> io::Result<()> {
-    let mut terminal = ratatui::try_init()?;
-    let result = run(&mut terminal);
-    let restore = ratatui::try_restore();
-    result?;
-    restore
 }
 
 fn validate_terminal(output: OutputFormat, list_command: &str) -> Result<()> {
@@ -695,7 +685,7 @@ fn render_sessions(frame: &mut Frame<'_>, state: &SessionState) {
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .block(Block::default().borders(Borders::ALL).title(title))
-    .highlight_style(
+    .row_highlight_style(
         Style::default()
             .bg(Color::DarkGray)
             .add_modifier(Modifier::BOLD),
@@ -750,7 +740,7 @@ fn render_worktrees(frame: &mut Frame<'_>, state: &WorktreeState) {
             .borders(Borders::ALL)
             .title(" Managed worktrees "),
     )
-    .highlight_style(
+    .row_highlight_style(
         Style::default()
             .bg(Color::DarkGray)
             .add_modifier(Modifier::BOLD),

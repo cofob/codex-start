@@ -882,7 +882,7 @@ mod tests {
         plan.mounts.push(MountPlan {
             id: "workspace".into(),
             source: MountSource::Bind {
-                path: PathBuf::from("/host/project"),
+                path: std::env::temp_dir().join("codex-start-host-project"),
             },
             target: PathBuf::from("/workspaces/project123/main"),
             read_only: false,

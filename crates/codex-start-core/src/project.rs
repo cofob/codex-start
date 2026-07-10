@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(main.display_name, "my-project");
         assert_eq!(main.relative_workdir, Path::new("src"));
         let app = AppPaths::from_roots(
-            Path::new("/home/test"),
+            &temporary.path().join("home"),
             Some(temporary.path().join("config")),
             Some(temporary.path().join("data")),
             Some(temporary.path().join("cache")),
@@ -425,16 +425,19 @@ mod tests {
         let src = temporary.path().join("src");
         std::fs::create_dir(&src).expect("src");
         let identity = ProjectIdentity::directory(temporary.path(), &src).expect("identity");
+        let config = temporary.path().join("config");
         let app = AppPaths::from_roots(
-            Path::new("/home/me"),
-            Some(PathBuf::from("/config")),
-            Some(PathBuf::from("/data")),
-            Some(PathBuf::from("/cache")),
+            &temporary.path().join("home"),
+            Some(config.clone()),
+            Some(temporary.path().join("data")),
+            Some(temporary.path().join("cache")),
         )
         .expect("paths");
         assert_eq!(
             identity.config_path(&app),
-            Path::new("/config/codex-start/projects").join(format!("{}.toml", identity.id))
+            config
+                .join("codex-start/projects")
+                .join(format!("{}.toml", identity.id))
         );
         assert_eq!(
             identity.container_workdir("Feature One"),
@@ -456,29 +459,16 @@ mod tests {
 
     #[test]
     fn xdg_defaults_and_overrides_are_exact() {
-        let defaults =
-            AppPaths::from_roots(Path::new("/home/a"), None, None, None).expect("defaults");
+        let temporary = tempdir().expect("tempdir");
+        let home = temporary.path().join("home");
+        let defaults = AppPaths::from_roots(&home, None, None, None).expect("defaults");
         assert_eq!(
             defaults.global_config(),
-            Path::new("/home/a/.config/codex-start/config.toml")
+            home.join(".config/codex-start/config.toml")
         );
-        assert_eq!(
-            defaults.homes,
-            Path::new("/home/a/.local/share/codex-start/homes")
-        );
-        assert_eq!(
-            defaults.runtime,
-            Path::new("/home/a/.cache/codex-start/runtime")
-        );
-        assert!(
-            AppPaths::from_roots(
-                Path::new("/home/a"),
-                Some(PathBuf::from("relative")),
-                None,
-                None
-            )
-            .is_err()
-        );
+        assert_eq!(defaults.homes, home.join(".local/share/codex-start/homes"));
+        assert_eq!(defaults.runtime, home.join(".cache/codex-start/runtime"));
+        assert!(AppPaths::from_roots(&home, Some(PathBuf::from("relative")), None, None).is_err());
     }
 
     #[test]

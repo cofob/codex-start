@@ -23,6 +23,7 @@ flate2.workspace = true
 fs2.workspace = true
 ratatui.workspace = true
 reqwest.workspace = true
+rustls.workspace = true
 secrecy.workspace = true
 semver.workspace = true
 serde.workspace = true

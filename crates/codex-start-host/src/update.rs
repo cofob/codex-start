@@ -174,6 +174,14 @@ struct ReleaseClient {
 
 impl ReleaseClient {
     fn github() -> Result<Self> {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            drop(rustls::crypto::aws_lc_rs::default_provider().install_default());
+        }
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            return Err(HostError::Runtime(
+                "install the TLS cryptography provider".to_owned(),
+            ));
+        }
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(3))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -1503,7 +1511,7 @@ fn install_portable_windows(
     restart: bool,
 ) -> Result<()> {
     let binary = extract_zip_binary(archive, temporary.path())?;
-    let directory = temporary.into_path();
+    let directory = temporary.keep();
     let source = directory.join("codex-start.new.exe");
     fs::rename(&binary, &source).map_err(|error| HostError::io(&source, error))?;
     let helper = directory.join("codex-start-update-helper.exe");
