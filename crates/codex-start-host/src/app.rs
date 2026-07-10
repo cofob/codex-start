@@ -53,7 +53,10 @@ use crate::{
     paths::{container_parent, join_container_components, join_container_relative},
     runtime::{MountKind, MountRequest, PublishRequest, RunRequest, Runtime, RuntimeKind},
     secrets::{SecretBundle, SecretSource, SecretSpec},
-    session::{SessionKind, SessionRecord, SessionStatus, SessionStore, current_ssh_socket},
+    session::{
+        APP_SERVER_ENDPOINT, APP_SERVER_SOCKET, SessionKind, SessionRecord, SessionStatus,
+        SessionStore, current_ssh_socket,
+    },
 };
 
 const MANAGED_LABEL: &str = "io.codex-start.managed";
@@ -62,8 +65,9 @@ const SESSION_WORKER_ENV: &str = "CODEX_START_SESSION_WORKER";
 const SESSION_NAME_ENV: &str = "CODEX_START_SESSION_NAME";
 const SESSION_AGENT_TARGET_ENV: &str = "CODEX_START_SESSION_AGENT_TARGET";
 const SESSION_INTERACTIVE_ENV: &str = "CODEX_START_SESSION_INTERACTIVE";
-const APP_SERVER_SOCKET: &str = "/tmp/codex-start-app-server.sock";
-const APP_SERVER_ENDPOINT: &str = "unix:///tmp/codex-start-app-server.sock";
+const SESSION_STARTUP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const SESSION_READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SESSION_PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Resolve configuration and execute one CLI operation.
 pub async fn run(cli: Cli) -> Result<u8> {
@@ -1129,8 +1133,12 @@ fn wait_for_session_container(
     store: &SessionStore,
     record: &SessionRecord,
 ) -> Result<()> {
-    for _ in 0..100 {
-        if runtime.container_state(&record.container_name)? == Some(true) {
+    let started = std::time::Instant::now();
+    let deadline = started + SESSION_STARTUP_TIMEOUT;
+    let mut next_progress = started;
+    loop {
+        let container_running = runtime.container_state(&record.container_name)? == Some(true);
+        if container_running {
             let ready = record.kind != SessionKind::Interactive
                 || runtime.exec_probe(
                     &record.container_name,
@@ -1154,10 +1162,27 @@ fn wait_for_session_container(
                 record.id
             )));
         }
-        std::thread::sleep(Duration::from_millis(100));
+        let now = std::time::Instant::now();
+        if now >= next_progress {
+            let phase = if container_running {
+                "container is running; waiting for the Codex app-server"
+            } else {
+                "preparing the environment image and container"
+            };
+            eprintln!(
+                "waiting for session {}: {phase} ({}s elapsed)",
+                record.id,
+                now.duration_since(started).as_secs()
+            );
+            next_progress = now + SESSION_PROGRESS_INTERVAL;
+        }
+        if now >= deadline {
+            break;
+        }
+        std::thread::sleep(SESSION_READY_POLL_INTERVAL);
     }
     Err(HostError::Runtime(format!(
-        "session {} did not become ready within 10 seconds",
+        "session {} did not become ready within 10 minutes",
         record.id
     )))
 }

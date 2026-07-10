@@ -1210,6 +1210,7 @@ pub struct OwnershipReport {
 
 /// Recursively assigns container-owned roots without following symlinks.
 ///
+/// Missing roots and their parent directories are created before traversal.
 /// Traversal is bounded, remains under each lexical root, and does not cross
 /// filesystem device boundaries (which protects nested bind mounts).
 ///
@@ -1223,6 +1224,9 @@ pub fn prepare_ownership(
     gid: u32,
 ) -> Result<OwnershipReport, InitError> {
     validate_ownership_paths(paths)?;
+    for root in paths {
+        create_ownership_root(root)?;
+    }
     let mut report = OwnershipReport::default();
     for root in paths {
         let metadata =
@@ -1289,6 +1293,40 @@ pub fn prepare_ownership(
         }
     }
     Ok(report)
+}
+
+fn create_ownership_root(root: &Path) -> Result<(), InitError> {
+    use std::path::Component;
+
+    let mut current = PathBuf::from("/");
+    for component in root.components() {
+        let Component::Normal(component) = component else {
+            continue;
+        };
+        current.push(component);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(InitError::InvalidOwnershipPath(format!(
+                    "{} is not a real directory",
+                    current.display()
+                )));
+            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                std::fs::create_dir(&current).map_err(|source| InitError::OwnershipIo {
+                    path: current.clone(),
+                    source,
+                })?;
+            }
+            Err(source) => {
+                return Err(InitError::OwnershipIo {
+                    path: current,
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Loads a JSON object mapping environment variable names to secret files.
@@ -2405,8 +2443,9 @@ mod tests {
     #[test]
     fn ownership_is_bounded_to_real_directory_and_skips_symlinks() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("owned");
-        let outside = directory.path().join("outside");
+        let directory_path = directory.path().canonicalize().unwrap();
+        let root = directory_path.join("owned");
+        let outside = directory_path.join("outside");
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("file"), b"data").unwrap();
         std::fs::write(&outside, b"outside").unwrap();
@@ -2416,6 +2455,37 @@ mod tests {
         assert_eq!(report.changed, 2);
         assert_eq!(report.skipped_symlinks, 1);
         assert_eq!(report.skipped_filesystems, 0);
+    }
+
+    #[test]
+    fn ownership_creates_missing_roots_before_traversal() {
+        let directory = tempfile::tempdir().unwrap();
+        let directory_path = directory.path().canonicalize().unwrap();
+        let root = directory_path.join("state/codex-start");
+        let metadata = std::fs::metadata(&directory_path).unwrap();
+
+        let report = prepare_ownership(&[root.clone()], metadata.uid(), metadata.gid()).unwrap();
+
+        assert!(root.is_dir());
+        assert_eq!(report.changed, 1);
+    }
+
+    #[test]
+    fn ownership_does_not_create_roots_through_symlinked_parents() {
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let directory_path = directory.path().canonicalize().unwrap();
+        let outside_path = outside.path().canonicalize().unwrap();
+        let linked = directory_path.join("linked");
+        symlink(&outside_path, &linked).unwrap();
+        let root = linked.join("codex-start");
+        let metadata = std::fs::metadata(&directory_path).unwrap();
+
+        assert!(matches!(
+            prepare_ownership(&[root], metadata.uid(), metadata.gid()),
+            Err(InitError::InvalidOwnershipPath(_))
+        ));
+        assert!(!outside_path.join("codex-start").exists());
     }
 
     #[test]

@@ -210,7 +210,7 @@ jobs:
               --format "{{json (index .Provenance \"${platform}\")}}")"
             sbom="$(docker buildx imagetools inspect "${reference}" \
               --format "{{json (index .SBOM \"${platform}\")}}")"
-            jq -e '.SLSA.buildType | type == "string" and length > 0' <<<"${provenance}"
+            jq -e '(.SLSA.buildDefinition.buildType // .SLSA.buildType) | type == "string" and length > 0' <<<"${provenance}"
             jq -e '.SPDX.spdxVersion | startswith("SPDX-")' <<<"${sbom}"
           done
           {

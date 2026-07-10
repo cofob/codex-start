@@ -25,7 +25,9 @@ const SESSION_SCHEMA_VERSION: u32 = 1;
 const SESSION_FILE: &str = "session.json";
 const SESSION_LOG: &str = "session.log";
 const SSH_TARGET_FILE: &str = "ssh-agent-target.json";
-const APP_SERVER_SOCKET: &str = "/tmp/codex-start-app-server.sock";
+pub(crate) const APP_SERVER_SOCKET: &str = "/home/codex/.local/state/codex-start/app-server.sock";
+pub(crate) const APP_SERVER_ENDPOINT: &str =
+    "unix:///home/codex/.local/state/codex-start/app-server.sock";
 const MANAGED_LABEL: &str = "io.codex-start.managed";
 const SESSION_LABEL: &str = "io.codex-start.session";
 
@@ -1094,7 +1096,10 @@ fn is_socket(_path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionKind, SessionRecord, SessionStatus, SessionStore};
+    use super::{
+        APP_SERVER_ENDPOINT, APP_SERVER_SOCKET, SessionKind, SessionRecord, SessionStatus,
+        SessionStore,
+    };
     use crate::runtime::RuntimeKind;
     use codex_start_core::UnixArgument;
 
@@ -1111,6 +1116,15 @@ mod tests {
             UnixArgument::from("/workspace"),
             UnixArgument::from("/workspace"),
         )
+    }
+
+    #[test]
+    fn app_server_socket_uses_the_private_workload_state_directory() {
+        assert_eq!(
+            APP_SERVER_ENDPOINT.strip_prefix("unix://"),
+            Some(APP_SERVER_SOCKET)
+        );
+        assert!(APP_SERVER_SOCKET.starts_with("/home/codex/.local/state/codex-start/"));
     }
 
     #[test]
