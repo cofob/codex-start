@@ -21,6 +21,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NPM_CONFIG_PREFIX=/home/codex/.local \
     PATH=/home/codex/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
         bash bc bind9-dnsutils bsdmainutils build-essential ca-certificates coreutils curl \
         dnsutils fd-find file gh git gnupg htop iproute2 iputils-ping jq less lsof man-db \
@@ -38,6 +39,7 @@ RUN apt-get update \
     && printf 'codex ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/codex \
     && chmod 0440 /etc/sudoers.d/codex
 RUN echo "installing Codex refresh ${CODEX_REFRESH}" \
+    && npm install --global --prefix /usr/local --omit=dev npm@^11 \
     && npm install --global --omit=dev @openai/codex@latest \
     && npm cache clean --force
 COPY --from=helper-builder /source/target/release/codex-start-init /usr/local/bin/codex-start-init
@@ -110,6 +112,7 @@ COPY --from=node-source /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
         bash bc bind9-dnsutils bsdmainutils ca-certificates coreutils curl dnsutils fd-find file \
         gh git gnupg htop iproute2 iputils-ping jq less lsof man-db nano ncdu netcat-openbsd \
@@ -130,6 +133,7 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && printf 'codex ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/codex \
     && chmod 0440 /etc/sudoers.d/codex
 RUN echo "installing Codex refresh ${CODEX_REFRESH}" \
+    && npm install --global --prefix /usr/local --omit=dev npm@^11 \
     && npm install --global --omit=dev @openai/codex@latest \
     && npm cache clean --force
 COPY --from=helper-builder /source/target/release/codex-start-init /usr/local/bin/codex-start-init

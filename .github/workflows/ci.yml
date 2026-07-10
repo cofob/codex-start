@@ -532,7 +532,10 @@ jobs:
             cd "${project}"
             "${launcher}" --config "${config}" run generic \
               --network offline --no-worktree --no-tty -- \
-              --profile smoke features list >/dev/null
+              --profile smoke --version >/dev/null
+            "${launcher}" --config "${config}" run generic \
+              --network offline --no-worktree --no-tty -- \
+              features list >/dev/null
             "${launcher}" --config "${config}" run generic \
               --network offline --no-worktree --no-tty -- \
               -c 'mcp_servers."ci.server".command="printf"' \
