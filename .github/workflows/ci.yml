@@ -98,7 +98,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: coverage
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.3
         with:
           tool: cargo-llvm-cov@0.8.7
       - name: Measure coverage and enforce the line gate
