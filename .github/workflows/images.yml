@@ -83,7 +83,7 @@ jobs:
         id: owner
         shell: bash
         run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >>"${GITHUB_OUTPUT}"
-      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -250,12 +250,12 @@ jobs:
           limit-severities-for-sarif: true
           ignore-unfixed: true
           exit-code: "1"
-      - uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4
+      - uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         if: always() && github.event.repository.private == false && hashFiles('trivy-amd64.sarif') != ''
         with:
           sarif_file: trivy-amd64.sarif
           category: image-${{ matrix.name }}-amd64
-      - uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4
+      - uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         if: always() && github.event.repository.private == false && hashFiles('trivy-arm64.sarif') != ''
         with:
           sarif_file: trivy-arm64.sarif
@@ -297,7 +297,7 @@ jobs:
         name: [generic, web, uv, rust, sidecar]
     steps:
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
