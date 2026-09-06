@@ -14,10 +14,10 @@ SOURCE_DATE_EPOCH="$(git show --no-patch --format=%ct v1.2.3)" \
   staging/codex-start-1.2.3-x86_64-unknown-linux-gnu \
   codex-start-1.2.3-x86_64-unknown-linux-gnu.tar.gz \
   --prefix codex-start-1.2.3-x86_64-unknown-linux-gnu \
-  --executable codex-start
+  --executable codex-start --executable codex-start-adapter
 ```
 
-Windows uses the same command with a `.zip` output and `--executable codex-start.exe`. Before publication, the final job validates the complete wire manifest:
+Windows uses the same command with a `.zip` output and `--executable codex-start.exe --executable codex-start-adapter.exe`. Before publication, the final job validates the complete wire manifest:
 
 ```console
 cargo run --locked --package xtask -- release-manifest \
@@ -53,3 +53,9 @@ Image builds first push a run-scoped staging tag. CI signs the index digest befo
 For each available combination, exercise `doctor`; all four environment builds; interactive run/shell and signal propagation; UID/GID file writes; managed and direct host homes; worktree create/reuse/retain/cleanup; merge-agent branch/worktree sources, conflict resolution, model override, dry-run, and preserved failure state; loopback ports; offline/allowlist/bridge/host networking; fake SSH/GPG agents; host SSH; OAuth callback; redacted secret injection; Ollama/LM Studio tunnels; and Codex `--version`, help, config/profile loading, stdio/HTTP MCP, skills, plugins, hooks, and exit-code passthrough.
 
 No smoke test requires paid API traffic. Authentication-dependent tests use temporary fixtures and a local HTTP/MCP service.
+
+## Release candidates
+
+Use canonical prerelease tags such as `v0.2.0-rc.1` and the matching Cargo version `0.2.0-rc.1`. The tag starts the release workflow. RC releases publish versioned binaries, both installers, and matching OCI image tags, but do not replace the stable GitHub latest release.
+
+Install an RC explicitly with `install.sh --version 0.2.0-rc.1` or `install.ps1 -Version 0.2.0-rc.1`. The release preflight runs both installer fixtures using that release version. The automatic updater remains on the stable channel: it does not offer RC builds or downgrade an installed RC to an older stable version. Once a newer stable version exists, the RC can update to it. Portable updates replace both `codex-start` and `codex-start-adapter`.

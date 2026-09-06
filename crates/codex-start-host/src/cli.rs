@@ -45,6 +45,10 @@ pub struct Cli {
 /// Top-level operations.
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
+    /// Serve Desktop or IDE clients through project containers.
+    Adapter(AdapterArgs),
+    #[command(name = "__adapter-setup", hide = true)]
+    AdapterSetup(crate::adapter_setup::SetupArgs),
     /// Start Codex in a selected development environment.
     Run(RunArgs),
     /// Merge branches or managed worktrees into the current branch using a Codex agent.
@@ -73,6 +77,23 @@ pub enum Command {
     /// Legacy invocation: the first value is an environment and the remainder are Codex args.
     #[command(external_subcommand)]
     External(Vec<OsString>),
+}
+
+/// Protocol-preserving container adapter for desktop and editor clients.
+#[derive(Clone, Debug, Args)]
+pub struct AdapterArgs {
+    /// Fix one project directory. By default, select projects from client requests.
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+    /// Environment name. Uses normal project configuration when omitted.
+    #[arg(long)]
+    pub environment: Option<String>,
+    /// Container options. Worktree and persistent modes are not supported.
+    #[command(flatten)]
+    pub options: MergeRunOptions,
+    /// Exact Codex arguments from the client; defaults to app-server.
+    #[arg(last = true, allow_hyphen_values = true)]
+    pub codex_args: Vec<OsString>,
 }
 
 /// Host-binary update options.

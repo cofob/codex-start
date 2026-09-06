@@ -58,16 +58,27 @@ require_signature = false
 
 `enabled` controls opportunistic interactive checks, not the explicit `codex-start update` command. `check_interval_hours` is the minimum interval between successful checks, and `require_signature` makes Cosign verification mandatory for updates. These host-global keys may be set by built-ins, global configuration, and `CODEX_START__UPDATES__...` environment variables; profiles, project documents, and environment manifests cannot set them. See [installation and update documentation](installation.md) for prompt, installer, and verification behavior.
 
-Persistent sessions are enabled by default:
+Containers are removed after the workload exits by default. Worktrees with changes or new commits remain. Persistent sessions are optional:
 
 ```toml
 [settings.sessions]
-enabled = true
+enabled = false
 on_tui_exit = "prompt" # prompt, detach, or stop
 refresh_ssh_on_attach = true
 ```
 
+Newly created worktrees with no changes or new commits and their owned branches are also removed by default. Set this option to `false` to keep them:
+
+```toml
+[settings.git]
+cleanup_untouched = true
+```
+
+Use `worktree cleanup` for explicit worktree removal. Automatic cleanup does not remove Codex homes or persistent caches.
+
 `codex-start run --ephemeral` disables session management at CLI precedence; `--persistent` forces it on. These runner flags are parsed only before the `--` passthrough delimiter, so native Codex flags with the same spelling after the delimiter remain untouched. Session metadata and private launch material live below the XDG data root. Redacted `session list/show` output never includes the host SSH-agent path, authentication tokens, or resolved secret values.
+
+`[settings.adapter]` in the global config controls idle project servers for Desktop and IDE connections. `idle_timeout_seconds` defaults to `1800` (30 minutes) and must be at least `1`. The adapter reads it once at connection startup. It does not stop loaded threads, active turns, pending requests, or approvals. See [adapter settings](adapter.md).
 
 `[settings.resources]` applies typed limits to the primary Codex workload container. It does not constrain the egress sidecar or host bridge processes. Every field is optional; when the table is absent, Docker or Podman retains its normal defaults. Resource fields follow normal per-field configuration precedence and may also be supplied by an environment manifest's `[settings.resources]` table.
 

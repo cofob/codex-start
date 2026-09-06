@@ -516,6 +516,9 @@ printf '%s\n' "$TAG" | grep -Eq \
     die "release tag is not a v-prefixed semantic version: $TAG"
 case "$TAG" in *[!A-Za-z0-9.v+-]*) die "release tag contains unsafe characters: $TAG" ;; esac
 [ -n "$RELEASE_VERSION" ] || die "release version is empty"
+# Releases before 0.2 contain only the launcher.
+BINARY_NAMES="codex-start-adapter codex-start"
+case "$RELEASE_VERSION" in 0.[01].*) BINARY_NAMES=codex-start ;; esac
 
 RELEASE_URL=$DOWNLOAD_BASE/$TAG
 download_file "$RELEASE_URL/SHA256SUMS" "$TEMP_DIR/SHA256SUMS" "$MAX_METADATA_BYTES"
@@ -587,21 +590,27 @@ if [ -n "$PACKAGE_KIND" ]; then
         apk) run_privileged apk add --allow-untrusted "$TEMP_DIR/$ARTIFACT_NAME" ;;
     esac
     [ -x "$DESTINATION" ] || die "$PACKAGE_KIND reported success but $DESTINATION was not installed"
+    for binary_name in $BINARY_NAMES; do
+        [ -x "/usr/bin/$binary_name" ] || die "$PACKAGE_KIND did not install $binary_name"
+    done
     RECEIPT_METHOD=$PACKAGE_KIND
 else
     need_command tar
-    archive_member=$(tar -tzf "$TEMP_DIR/$ARTIFACT_NAME" | awk '
-        /^[A-Za-z0-9._+-]+\/codex-start$/ { print; count++ }
-        END { if (count != 1) exit 1 }
-    ') || die "archive must contain exactly one safe codex-start executable path"
     mkdir -p -- "$TEMP_DIR/extract"
-    (
-        ulimit -f "$MAX_EXECUTABLE_BLOCKS"
-        tar -xzf "$TEMP_DIR/$ARTIFACT_NAME" -C "$TEMP_DIR/extract" "$archive_member"
-    ) || die "archive extraction failed or exceeded the executable size limit"
-    EXTRACTED=$TEMP_DIR/extract/$archive_member
-    [ -f "$EXTRACTED" ] && [ ! -L "$EXTRACTED" ] || die "archive executable is not a regular file"
-    chmod 755 "$EXTRACTED"
+    for binary_name in $BINARY_NAMES; do
+        archive_member=$(tar -tzf "$TEMP_DIR/$ARTIFACT_NAME" | awk -v binary="$binary_name" '
+            $0 ~ "^[A-Za-z0-9._+-]+/" binary "$" { print; count++ }
+            END { if (count != 1) exit 1 }
+        ') || die "archive must contain exactly one safe $binary_name executable path"
+        (
+            ulimit -f "$MAX_EXECUTABLE_BLOCKS"
+            tar -xzf "$TEMP_DIR/$ARTIFACT_NAME" -C "$TEMP_DIR/extract" "$archive_member"
+        ) || die "archive extraction failed or exceeded the executable size limit"
+        extracted_binary=$TEMP_DIR/extract/$archive_member
+        [ -f "$extracted_binary" ] && [ ! -L "$extracted_binary" ] || die "archive executable is not a regular file"
+        chmod 755 "$extracted_binary"
+        mv -- "$extracted_binary" "$TEMP_DIR/$binary_name"
+    done
 
     if [ "$SYSTEM" -eq 1 ]; then
         INSTALL_DIR=/usr/local/bin
@@ -626,17 +635,28 @@ else
         FRESH_INSTALL=1
     fi
 
-    STAGED_DESTINATION=$DESTINATION.tmp.$$
-    if [ -w "$INSTALL_DIR" ]; then
-        cp -- "$EXTRACTED" "$STAGED_DESTINATION"
-        chmod 755 "$STAGED_DESTINATION"
-        mv -f -- "$STAGED_DESTINATION" "$DESTINATION"
-    else
-        run_privileged cp -- "$EXTRACTED" "$STAGED_DESTINATION"
-        run_privileged chmod 755 "$STAGED_DESTINATION"
-        run_privileged mv -f -- "$STAGED_DESTINATION" "$DESTINATION"
-    fi
-    STAGED_DESTINATION=
+    for binary_name in $BINARY_NAMES; do
+        binary_destination=$INSTALL_DIR/$binary_name
+        [ ! -L "$binary_destination" ] || die "refusing to replace symlinked destination: $binary_destination"
+        if [ -e "$binary_destination" ]; then
+            [ -f "$binary_destination" ] || die "destination is not a regular file: $binary_destination"
+            [ -x "$binary_destination" ] || [ "$FORCE" -eq 1 ] || die "destination is not executable; use --force to replace it"
+        fi
+    done
+    for binary_name in $BINARY_NAMES; do
+        binary_destination=$INSTALL_DIR/$binary_name
+        STAGED_DESTINATION=$binary_destination.tmp.$$
+        if [ -w "$INSTALL_DIR" ]; then
+            cp -- "$TEMP_DIR/$binary_name" "$STAGED_DESTINATION"
+            chmod 755 "$STAGED_DESTINATION"
+            mv -f -- "$STAGED_DESTINATION" "$binary_destination"
+        else
+            run_privileged cp -- "$TEMP_DIR/$binary_name" "$STAGED_DESTINATION"
+            run_privileged chmod 755 "$STAGED_DESTINATION"
+            run_privileged mv -f -- "$STAGED_DESTINATION" "$binary_destination"
+        fi
+        STAGED_DESTINATION=
+    done
     RECEIPT_METHOD=portable
 fi
 
@@ -647,7 +667,7 @@ fi
 write_receipt "$RECEIPT_METHOD" "$TARGET" "$DESTINATION"
 configure_auto_updates "$DESTINATION" "$AUTO_UPDATES"
 
-say "Installed codex-start $RELEASE_VERSION to $DESTINATION"
+say "Installed $BINARY_NAMES $RELEASE_VERSION to $(dirname "$DESTINATION")"
 if [ "$RECEIPT_METHOD" = portable ] && [ "$SYSTEM" -eq 0 ]; then
     case :${PATH:-}: in
         *:"$INSTALL_DIR":*) ;;

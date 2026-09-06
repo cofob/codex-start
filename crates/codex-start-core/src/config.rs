@@ -75,6 +75,29 @@ pub enum SessionExitBehavior {
     Stop,
 }
 
+/// Partial settings for the Desktop and IDE adapter connection.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AdapterPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_seconds: Option<u64>,
+}
+
+/// Idle project-server lifetime for a Desktop or IDE connection.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AdapterConfig {
+    pub idle_timeout_seconds: u64,
+}
+
+impl Default for AdapterConfig {
+    fn default() -> Self {
+        Self {
+            idle_timeout_seconds: 1800,
+        }
+    }
+}
+
 /// Partial persistent-session settings used in one configuration layer.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -99,7 +122,7 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             on_tui_exit: SessionExitBehavior::Prompt,
             refresh_ssh_on_attach: cfg!(unix),
         }
@@ -109,7 +132,7 @@ impl Default for SessionConfig {
 impl From<SessionPatch> for SessionConfig {
     fn from(patch: SessionPatch) -> Self {
         Self {
-            enabled: patch.enabled.unwrap_or(true),
+            enabled: patch.enabled.unwrap_or(false),
             on_tui_exit: patch.on_tui_exit.unwrap_or_default(),
             refresh_ssh_on_attach: patch.refresh_ssh_on_attach.unwrap_or(cfg!(unix)),
         }
@@ -373,6 +396,8 @@ impl Default for ForwardingConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct GitPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleanup_untouched: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_base: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_prefix: Option<String>,
@@ -383,14 +408,21 @@ pub struct GitPatch {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GitConfig {
+    #[serde(default = "default_cleanup_untouched")]
+    pub cleanup_untouched: bool,
     pub worktree_base: Option<PathBuf>,
     pub branch_prefix: String,
     pub editor: Vec<String>,
 }
 
+const fn default_cleanup_untouched() -> bool {
+    true
+}
+
 impl Default for GitConfig {
     fn default() -> Self {
         Self {
+            cleanup_untouched: true,
             worktree_base: None,
             branch_prefix: "codex/".into(),
             editor: Vec::new(),
@@ -1282,6 +1314,8 @@ pub struct ConfigPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions: Option<SessionPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<AdapterPatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub updates: Option<UpdatePatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex: Option<CodexPatch>,
@@ -1317,6 +1351,7 @@ impl ConfigPatch {
                 ssh_user: None,
             }),
             git: Some(GitPatch {
+                cleanup_untouched: Some(true),
                 worktree_base: None,
                 branch_prefix: Some("codex/".into()),
                 editor: Some(Vec::new()),
@@ -1334,8 +1369,11 @@ impl ConfigPatch {
                 max_header_bytes: Some(65_536),
                 handshake_timeout_seconds: Some(5),
             }),
+            adapter: Some(AdapterPatch {
+                idle_timeout_seconds: Some(1800),
+            }),
             sessions: Some(SessionPatch {
-                enabled: Some(true),
+                enabled: Some(false),
                 on_tui_exit: Some(SessionExitBehavior::Prompt),
                 refresh_ssh_on_attach: Some(cfg!(unix)),
             }),
@@ -1519,6 +1557,8 @@ pub struct EffectiveConfig {
     pub proxy: ProxyConfig,
     pub resources: ResourceLimits,
     pub sessions: SessionConfig,
+    #[serde(default)]
+    pub adapter: AdapterConfig,
     pub updates: UpdateConfig,
     pub codex: CodexConfig,
     pub homes: BTreeMap<String, HomeConfig>,
@@ -1941,6 +1981,7 @@ fn effective_from_patch(
     let proxy = patch.proxy.unwrap_or_default();
     let resources = patch.resources.unwrap_or_default();
     let sessions = patch.sessions.unwrap_or_default();
+    let adapter = patch.adapter.unwrap_or_default();
     let updates = patch.updates.unwrap_or_default();
     let codex = patch.codex.unwrap_or_default();
     #[cfg(windows)]
@@ -2001,6 +2042,7 @@ fn effective_from_patch(
             ssh_user: forwarding.ssh_user,
         },
         git: GitConfig {
+            cleanup_untouched: git.cleanup_untouched.unwrap_or(true),
             worktree_base: git.worktree_base,
             branch_prefix: git.branch_prefix.unwrap_or_else(|| "codex/".into()),
             editor: git.editor.unwrap_or_default(),
@@ -2022,6 +2064,9 @@ fn effective_from_patch(
         },
         resources: resources.into(),
         sessions: sessions.into(),
+        adapter: AdapterConfig {
+            idle_timeout_seconds: adapter.idle_timeout_seconds.unwrap_or(1800),
+        },
         updates: updates.into(),
         codex: CodexConfig {
             profile: codex.profile,
@@ -2034,6 +2079,16 @@ fn effective_from_patch(
 }
 
 fn validate_patch(patch: &ConfigPatch) -> Result<(), ConfigError> {
+    if patch
+        .adapter
+        .as_ref()
+        .and_then(|adapter| adapter.idle_timeout_seconds)
+        == Some(0)
+    {
+        return Err(ConfigError::Invalid(
+            "adapter.idle_timeout_seconds must be at least 1".into(),
+        ));
+    }
     if patch
         .updates
         .as_ref()
@@ -2687,9 +2742,43 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
-    fn persistent_sessions_default_on_and_support_normal_precedence() {
+    fn adapter_timeout_defaults_and_overrides_are_validated() {
+        assert_eq!(
+            ConfigResolver::new()
+                .resolve()
+                .unwrap()
+                .config
+                .adapter
+                .idle_timeout_seconds,
+            1800
+        );
+        let patch: ConfigPatch = toml::from_str("[adapter]\nidle_timeout_seconds = 60").unwrap();
+        let mut resolver = ConfigResolver::new();
+        resolver
+            .add_layer(ConfigLayer::new(ConfigLayerKind::Global, "test", patch))
+            .unwrap();
+        assert_eq!(
+            resolver
+                .resolve()
+                .unwrap()
+                .config
+                .adapter
+                .idle_timeout_seconds,
+            60
+        );
+        let patch: ConfigPatch = toml::from_str("[adapter]\nidle_timeout_seconds = 0").unwrap();
+        let mut resolver = ConfigResolver::new();
+        assert!(
+            resolver
+                .add_layer(ConfigLayer::new(ConfigLayerKind::Global, "invalid", patch))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn persistent_sessions_default_off_and_support_normal_precedence() {
         let defaults = ConfigResolver::new().resolve().expect("defaults");
-        assert!(defaults.config.sessions.enabled);
+        assert!(!defaults.config.sessions.enabled);
         assert_eq!(
             defaults.config.sessions.on_tui_exit,
             SessionExitBehavior::Prompt
@@ -2700,10 +2789,10 @@ mod tests {
         resolver
             .add_layer(ConfigLayer::new(
                 ConfigLayerKind::CommandLine,
-                "ephemeral CLI",
+                "persistent CLI",
                 ConfigPatch {
                     sessions: Some(SessionPatch {
-                        enabled: Some(false),
+                        enabled: Some(true),
                         ..SessionPatch::default()
                     }),
                     ..ConfigPatch::default()
@@ -2711,7 +2800,7 @@ mod tests {
             ))
             .expect("session override");
         assert!(
-            !resolver
+            resolver
                 .resolve()
                 .expect("resolved")
                 .config

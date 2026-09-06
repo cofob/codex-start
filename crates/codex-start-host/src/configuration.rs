@@ -129,11 +129,16 @@ impl ConfigDraft {
 impl ConfigContext {
     /// Discover configuration and project locations without creating project settings.
     pub fn discover(global_override: Option<&Path>) -> Result<Self> {
-        let paths = AppPaths::discover()?;
-        paths.ensure()?;
         let cwd =
             env::current_dir().map_err(|source| HostError::io("current directory", source))?;
-        let cwd = fs::canonicalize(&cwd).map_err(|source| HostError::io(&cwd, source))?;
+        Self::discover_at(global_override, &cwd)
+    }
+
+    /// Discover settings for an explicit project without changing the process directory.
+    pub fn discover_at(global_override: Option<&Path>, cwd: &Path) -> Result<Self> {
+        let paths = AppPaths::discover()?;
+        paths.ensure()?;
+        let cwd = fs::canonicalize(cwd).map_err(|source| HostError::io(cwd, source))?;
         let repo = GitRepo::discover(&cwd)?;
         let global_file = global_override.map_or_else(|| paths.config_file(), Path::to_path_buf);
         let project_file = repo.as_ref().map_or_else(

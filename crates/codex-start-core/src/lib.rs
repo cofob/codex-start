@@ -16,14 +16,14 @@ pub mod plan;
 pub mod project;
 
 pub use config::{
-    CodexConfig, ConfigDocument, ConfigError, ConfigLayer, ConfigLayerKind, ConfigPatch,
-    ConfigResolver, CpuLimit, DEFAULT_MERGE_MODEL, EffectiveConfig, ForwardingConfig,
-    ForwardingPatch, GitConfig, GitPatch, HomeConfig, HomeKind, McpOauthCallback, MemorySize,
-    MemorySwapLimit, MergeConfig, MergePatch, NetworkMode, ProfileConfig, Provenance, ProxyConfig,
-    ProxyPatch, ResolvedConfig, ResourceLimits, ResourcePatch, ResourceValues, RuntimeKind,
-    SecretProvider, SecretProviderKind, SessionConfig, SessionExitBehavior, SessionPatch,
-    SshAgentBridge, TtyMode, Ulimit, UpdateConfig, UpdatePatch, ValueSource, WorktreeMode,
-    environment_patch,
+    AdapterConfig, AdapterPatch, CodexConfig, ConfigDocument, ConfigError, ConfigLayer,
+    ConfigLayerKind, ConfigPatch, ConfigResolver, CpuLimit, DEFAULT_MERGE_MODEL, EffectiveConfig,
+    ForwardingConfig, ForwardingPatch, GitConfig, GitPatch, HomeConfig, HomeKind, McpOauthCallback,
+    MemorySize, MemorySwapLimit, MergeConfig, MergePatch, NetworkMode, ProfileConfig, Provenance,
+    ProxyConfig, ProxyPatch, ResolvedConfig, ResourceLimits, ResourcePatch, ResourceValues,
+    RuntimeKind, SecretProvider, SecretProviderKind, SessionConfig, SessionExitBehavior,
+    SessionPatch, SshAgentBridge, TtyMode, Ulimit, UpdateConfig, UpdatePatch, ValueSource,
+    WorktreeMode, environment_patch,
 };
 pub use container_path::{ContainerPath, ContainerPathError};
 pub use environment::{

@@ -629,7 +629,7 @@ where
             // intentionally keeps stdin open.
             let outbound = timeout(Duration::from_millis(50), &mut outbound)
                 .await
-                .map_or(Ok(0), |result| result)?;
+                .unwrap_or(Ok(0))?;
             Ok(RelayStats {
                 first_to_second: outbound,
                 second_to_first: inbound,

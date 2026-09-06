@@ -12,12 +12,16 @@ default-run = "codex-start"
 name = "codex-start"
 path = "src/main.rs"
 
+[[bin]]
+name = "codex-start-adapter"
+path = "src/adapter_main.rs"
+
 [dependencies]
 base64.workspace = true
 blake3.workspace = true
 clap.workspace = true
-codex-start-core = { version = "0.1.0", path = "../codex-start-core" }
-codex-start-proxy = { version = "0.1.0", path = "../codex-start-proxy" }
+codex-start-core = { version = "0.2.0-rc.1", path = "../codex-start-core" }
+codex-start-proxy = { version = "0.2.0-rc.1", path = "../codex-start-proxy" }
 dialoguer.workspace = true
 flate2.workspace = true
 fs2.workspace = true

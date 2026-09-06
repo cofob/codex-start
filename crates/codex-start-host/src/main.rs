@@ -1,5 +1,10 @@
 //! codex-start command-line entry point.
 
+mod adapter;
+mod adapter_broker;
+mod adapter_fs;
+mod adapter_settings;
+mod adapter_setup;
 mod app;
 mod assets;
 mod cli;

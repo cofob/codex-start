@@ -1,5 +1,7 @@
 # Installation and updates
 
+From version 0.2, installation includes `codex-start` and `codex-start-adapter` in the same binary directory. Use the adapter's path directly in Desktop or VS Code; see [adapter setup](adapter.md). Both executables are included in portable archives, Linux packages, and source installs.
+
 Official releases provide portable archives for Linux, macOS, and Windows on x86-64 and ARM64. Linux releases also provide DEB, RPM, and APK packages. The installers select the exact artifact from the release's signed `release-manifest.json`; they do not guess a filename from untrusted API data.
 
 ## Installer scripts
@@ -38,6 +40,8 @@ Both installers support the same policy controls:
 | `--force` | `-Force` | Replace an unusual existing regular destination, while still rejecting links. |
 
 A fresh interactive install asks whether to enable automatic update checks and defaults to Yes. A fresh non-interactive install also enables checks unless the disable option is supplied. An upgrade preserves the existing choice unless an explicit enable/disable option overrides it.
+
+For `0.2.0-rc.1`, download the installer from `releases/download/v0.2.0-rc.1/install.sh` (or `install.ps1`) in this repository, then pass `--version 0.2.0-rc.1` (or `-Version 0.2.0-rc.1`). The latest stable installer and the portable updater in 0.1.x install only the launcher. To add the adapter to a 0.1.x installation, run the installer from the selected 0.2 release. Default installation and automatic updates remain on the stable channel.
 
 ## Verification model
 

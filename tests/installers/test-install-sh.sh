@@ -50,8 +50,10 @@ case $(uname -m) in
         ;;
 esac
 
-VERSION=1.2.3
+VERSION=${CODEX_START_TEST_VERSION:-1.2.3}
 TAG=v$VERSION
+EXPECT_ADAPTER=1
+case "$VERSION" in 0.[01].*) EXPECT_ADAPTER=0 ;; esac
 RELEASE_DIR=$TEST_ROOT/releases/download/$TAG
 STAGING=$TEST_ROOT/staging/codex-start-$VERSION-fixture
 mkdir -p "$RELEASE_DIR" "$STAGING" "$TEST_ROOT/home" "$TEST_ROOT/data"
@@ -65,6 +67,7 @@ fi
 printf 'fixture codex-start 1.2.3\n'
 EOF
 chmod 755 "$STAGING/codex-start"
+if [ "$EXPECT_ADAPTER" -eq 1 ]; then cp "$STAGING/codex-start" "$STAGING/codex-start-adapter"; fi
 cp "$ROOT/README.md" "$ROOT/LICENSE" "$STAGING/"
 
 ARTIFACT=codex-start-$VERSION-fixture.tar.gz
@@ -138,6 +141,7 @@ chmod 755 "$FAKE_COSIGN"
 TEST_COSIGN=$FAKE_COSIGN TEST_CONFIG_LOG=$TEST_ROOT/signed-config.log \
     run_installer "$TEST_ROOT/signed-bin" --yes --require-signature >"$TEST_ROOT/signed.out" 2>"$TEST_ROOT/signed.err"
 [ -x "$TEST_ROOT/signed-bin/codex-start" ] || fail 'strict signed install did not write an executable'
+[ "$EXPECT_ADAPTER" -eq 0 ] || [ -x "$TEST_ROOT/signed-bin/codex-start-adapter" ] || fail 'adapter was not installed'
 [ "$(wc -l <"$COSIGN_LOG" | tr -d '[:space:]')" = 2 ] || fail 'Cosign did not verify both checksum and artifact bundles'
 grep -q -- '--certificate-oidc-issuer https://token.actions.githubusercontent.com' "$COSIGN_LOG" || fail 'Cosign issuer constraint was not supplied'
 if TEST_COSIGN=none TEST_CONFIG_LOG=$TEST_ROOT/signed-config.log \
@@ -164,6 +168,10 @@ run_installer "$INSTALL_DIR" --yes >"$TEST_ROOT/upgrade.out" 2>"$TEST_ROOT/upgra
 # An explicit preference must override the preserved value.
 run_installer "$INSTALL_DIR" --yes --no-auto-updates >"$TEST_ROOT/disable.out" 2>"$TEST_ROOT/disable.err"
 [ "$(tail -n 1 "$CONFIG_LOG")" = false ] || fail '--no-auto-updates was not persisted'
+
+# Explicit versions, including RC tags, use the same verified manifest path.
+run_installer "$TEST_ROOT/explicit-bin" --yes --version "$VERSION" >/dev/null
+[ "$EXPECT_ADAPTER" -eq 0 ] || [ -x "$TEST_ROOT/explicit-bin/codex-start-adapter" ] || fail 'explicit version omitted adapter'
 
 # A corrupted artifact must fail before replacing the installed executable.
 BEFORE_SHA=$(sha256_file "$INSTALL_DIR/codex-start")

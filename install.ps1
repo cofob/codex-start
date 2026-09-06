@@ -6,7 +6,7 @@ Install the latest stable codex-start release on Windows.
 .DESCRIPTION
 Downloads an exact artifact selected from release-manifest.json, verifies its
 SHA-256 checksum, verifies its Sigstore bundle when Cosign is available, and
-atomically installs codex-start.exe.
+installs codex-start.exe and codex-start-adapter.exe.
 #>
 [CmdletBinding()]
 param(
@@ -449,65 +449,82 @@ try {
         Confirm-SigstoreBundle -Cosign $Cosign -Path $ArtifactPath -Bundle $ArtifactBundlePath -Tag $Tag
     }
 
+    # Releases before 0.2 contain only the launcher.
+    $BinaryNames = @('codex-start-adapter.exe', 'codex-start.exe')
+    if ($ReleaseVersion -match '^0\.[01]\.') { $BinaryNames = @('codex-start.exe') }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $Archive = [System.IO.Compression.ZipFile]::OpenRead($ArtifactPath)
     try {
-        $ExecutableEntries = @($Archive.Entries | Where-Object {
-            $_.FullName -cmatch '^[A-Za-z0-9._+-]+/codex-start\.exe$' -and $_.Name -ceq 'codex-start.exe'
-        })
-        if ($ExecutableEntries.Count -ne 1) {
-            throw 'archive must contain exactly one safe codex-start.exe path'
-        }
-        [System.IO.Directory]::CreateDirectory($InstallDir) | Out-Null
-        $InstallDirectoryItem = Get-Item -LiteralPath $InstallDir
-        if ($InstallDirectoryItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-            throw "refusing a reparse-point installation directory: $InstallDir"
-        }
-        if ((Test-Path -LiteralPath $Destination) -and -not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
-            throw "destination is not a regular file: $Destination"
-        }
-        if (Test-Path -LiteralPath $Destination -PathType Leaf) {
-            $Existing = Get-Item -LiteralPath $Destination
-            if ($Existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-                throw "refusing to replace a reparse-point destination: $Destination"
-            }
-            if ($Existing.IsReadOnly) {
-                if (-not $Force) { throw "destination is read-only; use -Force to replace it: $Destination" }
-                $Existing.IsReadOnly = $false
-            }
-        }
-        $StagedDestination = "$Destination.tmp.$PID"
-        $EntryStream = $ExecutableEntries[0].Open()
-        try {
-            if ($ExecutableEntries[0].Length -gt $MaxExecutableBytes) {
-                throw "archive executable exceeds the $MaxExecutableBytes byte safety limit"
-            }
-            $DestinationStream = New-Object System.IO.FileStream(
-                $StagedDestination,
-                [System.IO.FileMode]::CreateNew,
-                [System.IO.FileAccess]::Write,
-                [System.IO.FileShare]::None
-            )
-            try {
-                $CopyBuffer = New-Object byte[] 65536
-                [long] $Copied = 0
-                while (($CopyRead = $EntryStream.Read($CopyBuffer, 0, $CopyBuffer.Length)) -gt 0) {
-                    $Copied += $CopyRead
-                    if ($Copied -gt $MaxExecutableBytes) { throw 'archive executable exceeded the size safety limit' }
-                    $DestinationStream.Write($CopyBuffer, 0, $CopyRead)
+        $EntriesByName = @{}
+        foreach ($BinaryName in $BinaryNames) {
+            $Pattern = '^[A-Za-z0-9._+-]+/' + [regex]::Escape($BinaryName) + '$'
+            $ExecutableMatches = @($Archive.Entries | Where-Object {
+                $_.FullName -cmatch $Pattern -and $_.Name -ceq $BinaryName
+            })
+            if ($ExecutableMatches.Count -ne 1) { throw "archive must contain exactly one safe $BinaryName path" }
+            if ($ExecutableMatches[0].Length -gt $MaxExecutableBytes) { throw "archive executable exceeds the size safety limit" }
+            $EntriesByName[$BinaryName] = $ExecutableMatches[0]
+            $BinaryDestination = Join-Path $InstallDir $BinaryName
+            if (Test-Path -LiteralPath $BinaryDestination) {
+                $Existing = Get-Item -LiteralPath $BinaryDestination
+                if ($Existing.PSIsContainer -or ($Existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                    throw "refusing an unsafe destination: $BinaryDestination"
                 }
-                $DestinationStream.Flush($true)
             }
-            finally { $DestinationStream.Dispose() }
-        } finally {
-            $EntryStream.Dispose()
+        }
+        foreach ($BinaryName in $BinaryNames) {
+            $ExecutableEntries = @($EntriesByName[$BinaryName])
+            $BinaryDestination = Join-Path $InstallDir $BinaryName
+            [System.IO.Directory]::CreateDirectory($InstallDir) | Out-Null
+            $InstallDirectoryItem = Get-Item -LiteralPath $InstallDir
+            if ($InstallDirectoryItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                throw "refusing a reparse-point installation directory: $InstallDir"
+            }
+            if ((Test-Path -LiteralPath $BinaryDestination) -and -not (Test-Path -LiteralPath $BinaryDestination -PathType Leaf)) {
+                throw "destination is not a regular file: $BinaryDestination"
+            }
+            if (Test-Path -LiteralPath $BinaryDestination -PathType Leaf) {
+                $Existing = Get-Item -LiteralPath $BinaryDestination
+                if ($Existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                    throw "refusing to replace a reparse-point destination: $BinaryDestination"
+                }
+                if ($Existing.IsReadOnly) {
+                    if (-not $Force) { throw "destination is read-only; use -Force to replace it: $BinaryDestination" }
+                    $Existing.IsReadOnly = $false
+                }
+            }
+            $StagedDestination = "$BinaryDestination.tmp.$PID"
+            $EntryStream = $ExecutableEntries[0].Open()
+            try {
+                if ($ExecutableEntries[0].Length -gt $MaxExecutableBytes) {
+                    throw "archive executable exceeds the $MaxExecutableBytes byte safety limit"
+                }
+                $BinaryDestinationStream = New-Object System.IO.FileStream(
+                    $StagedDestination,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::None
+                )
+                try {
+                    $CopyBuffer = New-Object byte[] 65536
+                    [long] $Copied = 0
+                    while (($CopyRead = $EntryStream.Read($CopyBuffer, 0, $CopyBuffer.Length)) -gt 0) {
+                        $Copied += $CopyRead
+                        if ($Copied -gt $MaxExecutableBytes) { throw 'archive executable exceeded the size safety limit' }
+                        $BinaryDestinationStream.Write($CopyBuffer, 0, $CopyRead)
+                    }
+                    $BinaryDestinationStream.Flush($true)
+                }
+                finally { $BinaryDestinationStream.Dispose() }
+            } finally {
+                $EntryStream.Dispose()
+            }
+            Move-FileAtomically -Source $StagedDestination -Destination $BinaryDestination
+            $StagedDestination = $null
         }
     } finally {
         $Archive.Dispose()
     }
-    Move-FileAtomically -Source $StagedDestination -Destination $Destination
-    $StagedDestination = $null
-
     $AutoUpdateChoice = $null
     if ($AutoUpdates) { $AutoUpdateChoice = $true }
     elseif ($NoAutoUpdates) { $AutoUpdateChoice = $false }
@@ -531,7 +548,7 @@ try {
         Add-PathEntry -Directory $InstallDir -Scope $PathScope
     }
 
-    Write-Output "Installed codex-start $ReleaseVersion to $Destination"
+    Write-Output "Installed $($BinaryNames -join ", ") $ReleaseVersion to $InstallDir"
 } finally {
     if ($StagedDestination) { Remove-Item -LiteralPath $StagedDestination -Force -ErrorAction SilentlyContinue }
     if ($TemporaryDirectory) { Remove-Item -LiteralPath $TemporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue }

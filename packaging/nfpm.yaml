@@ -20,6 +20,13 @@ contents:
       mode: 0755
       owner: root
       group: root
+  - src: ${NFPM_ADAPTER}
+    dst: /usr/bin/codex-start-adapter
+    expand: true
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
   - src: README.md
     dst: /usr/share/doc/codex-start/README.md
     file_info:

@@ -85,7 +85,7 @@ codex-start session recovery enable
 
 Run bare `codex-start session` or `codex-start worktree` in a terminal to open the corresponding full-screen manager. The managers provide filtering, details, refresh, and context-sensitive lifecycle actions; force removal and force cleanup remain explicit CLI-only operations. The `session list` and `worktree list` subcommands remain suitable for scripts and support `--output json`.
 
-`run` is session-managed by default. A bare interactive run keeps a Codex app-server in the workload and reconnects TUI clients to it; an explicit command after `--` runs as a managed background job. Closing or killing the client terminal does not stop either kind. Interactive sessions can restart and resume their most recent project-scoped Codex thread; non-interactive jobs are deliberately never replayed after a reboot. Use `--ephemeral` for the previous foreground disposable lifecycle.
+`run` uses a foreground container by default. When the workload exits, the container, sidecar, run networks, and temporary cache volumes are removed. Newly created worktrees with no changes or new commits are also removed with their owned branches. Worktrees with changes, Codex homes, and persistent caches remain. Set `settings.git.cleanup_untouched = false` to keep all worktrees. Use `--persistent` or `settings.sessions.enabled = true` to keep a managed session. In that mode, a bare interactive run keeps a Codex app-server in the workload and reconnects TUI clients to it; an explicit command after `--` runs as a managed background job. Closing the client terminal does not stop a persistent session. Use `--ephemeral` to override persistent settings for one run.
 
 Persistent sessions force the authenticated SSH-agent relay so `session attach` and `session refresh` can retarget new connections to the caller's current `SSH_AUTH_SOCK`. The container-side socket remains stable. Normal TUI exit prompts to detach or stop; terminal loss detaches implicitly.
 
@@ -98,6 +98,12 @@ Cross-reboot recovery is opt-in. `session recovery enable` installs a user launc
 `merge` requires a clean, attached current branch and clean named source worktrees. Each source first resolves as an exact local branch and otherwise as a codex-start-managed worktree name. Codex merges sources in argument order, resolves conflicts, repairs integration failures, runs relevant checks, and must leave committed clean history. Failed or blocked runs preserve the repository for inspection; codex-start never resets or aborts it automatically.
 
 Migration aliases from pi-start are accepted, including `--commit`, `--squash`, `--move`, `--edit`, `--shell`, `--cleanup`, `--cleanup-git`, and `--no-network`. The last is a deprecated name for allowlist mode; `--offline` means no egress. In positional compatibility mode, a first value matching a loaded environment selects it and the remainder is passed to Codex; when it does not match an environment, all values are passed to Codex with the configured or detected environment.
+
+## Desktop and VS Code
+
+Installation includes `codex-start-adapter` next to `codex-start`. Run `codex-start-adapter install` to select VS Code and ChatGPT app (Codex Desktop) in a TUI. Use `install --vscode --desktop` to skip the TUI, or `uninstall` to restore the previous settings. No script creation, project arguments, or per-project editor settings are required.
+
+The adapter selects project containers from app-server requests and preserves their absolute host paths. See [adapter setup and compatibility](docs/adapter.md) for image preparation, authentication, and client limits.
 
 ## Environments
 

@@ -77,6 +77,12 @@ pub async fn run(cli: Cli) -> Result<u8> {
     if let Some(Command::UpdateApply(args)) = cli.command.clone() {
         return crate::update::apply_staged(args);
     }
+    if let Some(Command::AdapterSetup(args)) = &cli.command {
+        return crate::adapter_setup::run(args.clone());
+    }
+    if let Some(Command::Adapter(args)) = &cli.command {
+        return execute_adapter(&cli, args.clone()).await;
+    }
     let context = ConfigContext::discover(cli.config.as_deref())?;
     crate::update::cleanup_stale(&context);
     if crate::update::maybe_prompt(&context, &cli).await? {
@@ -86,6 +92,9 @@ pub async fn run(cli: Cli) -> Result<u8> {
         return dispatch_legacy(action, &cli, &context).await;
     }
     match cli.command {
+        Some(Command::Adapter(_) | Command::AdapterSetup(_)) => {
+            unreachable!("handled before normal launch dispatch")
+        }
         Some(Command::Run(mut args)) => {
             merge_legacy_run_options(&mut args.options, &cli.legacy)?;
             execute_run(&context, args, RunKind::Codex, output).await
@@ -157,9 +166,61 @@ pub async fn run(cli: Cli) -> Result<u8> {
     }
 }
 
+async fn execute_adapter(cli: &Cli, mut args: crate::cli::AdapterArgs) -> Result<u8> {
+    if !args.options.runtime_args.is_empty() {
+        return Err(HostError::Usage(
+            "adapter does not accept --runtime-arg; use typed container settings".to_owned(),
+        ));
+    }
+    if let Some(action) = legacy_action(&cli.legacy)? {
+        validate_legacy_action_payload(action, cli.command.as_ref())?;
+    }
+    if args.project.is_none()
+        && !args.options.dry_run
+        && (args.codex_args.is_empty() || args.codex_args.iter().any(|arg| arg == "app-server"))
+    {
+        if std::io::stdin().is_terminal() {
+            eprintln!(
+                "codex-start-adapter: starting a server for Desktop or VS Code; it waits for JSON requests on stdin. For an interactive session, run codex-start."
+            );
+        }
+        return crate::adapter_broker::run(&args.codex_args, cli.config.as_deref()).await;
+    }
+    // Executable probes from a GUI can start at `/`. Never mount that directory.
+    let scratch = if args.project.is_none() && !args.options.dry_run {
+        args.environment = Some("generic".to_owned());
+        Some(
+            tempfile::tempdir()
+                .map_err(|source| HostError::io("adapter probe directory", source))?,
+        )
+    } else {
+        None
+    };
+    let project = args
+        .project
+        .clone()
+        .or_else(|| scratch.as_ref().map(|dir| dir.path().to_path_buf()));
+    let cwd = project.map_or_else(
+        || std::env::current_dir().map_err(|source| HostError::io("current directory", source)),
+        Ok,
+    )?;
+    let context = ConfigContext::discover_at(cli.config.as_deref(), &cwd)?;
+    let args = crate::adapter::run_args(args);
+    let launch = resolve_run(&context, &args, RunKind::Adapter)?;
+    Box::pin(execute_resolved_run(
+        &context,
+        &args,
+        RunKind::Adapter,
+        launch,
+        cli.output,
+    ))
+    .await
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RunKind {
     Codex,
+    Adapter,
     Shell,
 }
 
@@ -1236,6 +1297,7 @@ async fn execute_resolved_run(
             runtime_args: &args.options.runtime_args,
             merge: launch.merge.as_ref(),
             session_kind: session_plan_kind(&launch.config, kind, &args.codex_args),
+            adapter: launch.adapter,
         })?;
         return emit_preview(output, &plan);
     }
@@ -1253,6 +1315,7 @@ async fn execute_resolved_run(
         runtime_args: &args.options.runtime_args,
         merge: launch.merge.as_ref(),
         session_kind: session_plan_kind(&launch.config, kind, &args.codex_args),
+        adapter: launch.adapter,
     })?;
     match prepare_runtime_run(context, args, kind, &launch)? {
         RuntimeRunOutcome::Attached(status) => Ok(status),
@@ -1273,6 +1336,7 @@ async fn execute_resolved_run(
 }
 
 struct ResolvedRun {
+    adapter: bool,
     config: EffectiveConfig,
     catalog: EnvironmentCatalog,
     environment: ResolvedEnvironment,
@@ -1295,11 +1359,14 @@ fn resolve_run_with_config(
     context: &ConfigContext,
     args: &RunArgs,
     kind: RunKind,
-    config: EffectiveConfig,
+    mut config: EffectiveConfig,
 ) -> Result<ResolvedRun> {
+    if kind == RunKind::Adapter {
+        crate::adapter::configure(&mut config, &context.cwd)?;
+    }
     let catalog = EnvironmentCatalog::load(&context.paths)?;
     let environment = catalog.resolve(&config.environment)?;
-    if kind == RunKind::Codex {
+    if kind != RunKind::Shell {
         environment
             .validate_project(context.project_root())
             .map_err(|error| HostError::Config(error.to_string()))?;
@@ -1321,18 +1388,19 @@ fn resolve_run_with_config(
     allowed_hosts.extend(native_codex_allowed_hosts(context, &config)?);
     allowed_hosts.sort();
     allowed_hosts.dedup();
-    let oauth_callback = if kind == RunKind::Codex {
+    let oauth_callback = if kind == RunKind::Shell {
+        McpOauthCallback::from_port(config.forwarding.oauth_callback_port)
+            .map_err(|error| HostError::Config(error.to_string()))?
+    } else {
         let overrides = native_codex_override_expressions(&config.codex.args, &args.codex_args)?;
         config
             .codex
             .mcp_oauth_callback(config.forwarding.oauth_callback_port, &overrides)
             .map_err(|error| HostError::Config(error.to_string()))?
-    } else {
-        McpOauthCallback::from_port(config.forwarding.oauth_callback_port)
-            .map_err(|error| HostError::Config(error.to_string()))?
     };
     let raw_command = workload_command(&config, kind, &args.codex_args, &oauth_callback);
     Ok(ResolvedRun {
+        adapter: kind == RunKind::Adapter,
         config,
         catalog,
         environment,
@@ -1395,7 +1463,7 @@ fn prepare_runtime_run(
     }
     let workspace_guard = WorkspaceGuard::prepare(context, &launch.config)?;
     let workspace = &workspace_guard.workspace;
-    if kind == RunKind::Codex {
+    if kind != RunKind::Shell {
         launch
             .environment
             .validate_project(&workspace.host_root)
@@ -1425,10 +1493,14 @@ fn prepare_runtime_run(
     } else {
         workspace.name.clone()
     };
-    let container_workspace = join_container_components(
-        &launch.environment.workdir,
-        [&*launch.project_id, &*session_name],
-    )?;
+    let container_workspace = if launch.adapter {
+        workspace.host_root.clone()
+    } else {
+        join_container_components(
+            &launch.environment.workdir,
+            [&*launch.project_id, &*session_name],
+        )?
+    };
     let container_workdir = match launch.config.workdir.clone() {
         Some(workdir) => workdir,
         None => join_container_relative(&container_workspace, &workspace.relative_cwd)?,
@@ -2145,6 +2217,7 @@ impl Drop for RunVolumeGuard {
 }
 
 struct PreviewPlanOptions<'a> {
+    adapter: bool,
     context: &'a ConfigContext,
     config: &'a EffectiveConfig,
     catalog: &'a EnvironmentCatalog,
@@ -2199,8 +2272,11 @@ fn preview_topology(options: &PreviewPlanOptions<'_>) -> Result<PreviewTopology>
     } else {
         workspace_name
     };
-    let container_workspace =
-        join_container_components(&environment.workdir, [options.project_id, &*workspace_name])?;
+    let container_workspace = if options.adapter {
+        context.project_root().to_path_buf()
+    } else {
+        join_container_components(&environment.workdir, [options.project_id, &*workspace_name])?
+    };
     let relative_cwd = context.repo.as_ref().map_or_else(
         || {
             context
@@ -2343,7 +2419,9 @@ fn preview_mounts(
         }],
     )?;
     if let Some(repo) = &context.repo
-        && (options.merge.is_some() || config.worktree != CoreWorktreeMode::Never)
+        && (options.merge.is_some()
+            || config.worktree != CoreWorktreeMode::Never
+            || repo.root.join(".git").is_file())
     {
         replace_mount_targets(
             &mut mounts,
@@ -3643,6 +3721,7 @@ fn prepare_workspace(context: &ConfigContext, config: &EffectiveConfig) -> Resul
 }
 
 struct WorkspaceGuard {
+    cleanup_untouched: bool,
     repo: Option<GitRepo>,
     workspace: Workspace,
     worktree_base: PathBuf,
@@ -3657,6 +3736,7 @@ impl WorkspaceGuard {
             .clone()
             .unwrap_or_else(|| context.paths.worktrees_dir());
         Ok(Self {
+            cleanup_untouched: config.git.cleanup_untouched,
             repo: context.repo.clone(),
             workspace: prepare_workspace(context, config)?,
             worktree_base,
@@ -3667,7 +3747,8 @@ impl WorkspaceGuard {
 
 impl Drop for WorkspaceGuard {
     fn drop(&mut self) {
-        if let Some(repo) = &self.repo
+        if self.cleanup_untouched
+            && let Some(repo) = &self.repo
             && let Err(error) = repo.cleanup_untouched_workspace(
                 &self.workspace,
                 &self.worktree_base,
@@ -4229,7 +4310,7 @@ fn join_runtime_task(
 }
 
 #[cfg(unix)]
-async fn termination_signal() {
+pub(crate) async fn termination_signal() {
     let interrupt = tokio::signal::ctrl_c();
     match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
         Ok(mut terminate) => tokio::select! {
@@ -4244,7 +4325,7 @@ async fn termination_signal() {
 }
 
 #[cfg(windows)]
-async fn termination_signal() {
+pub(crate) async fn termination_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
@@ -4306,6 +4387,77 @@ mod tests {
     use crate::git::{AgentMergeSource, AgentMergeTask};
     use crate::launch_plan::ForwardingTransport;
     use crate::runtime::{MountKind, MountRequest};
+
+    #[test]
+    fn worktree_cleanup_defaults_on_and_can_be_disabled() {
+        use super::WorkspaceGuard;
+        use crate::git::{GitRepo, WorktreeMode};
+        use std::{fs, process::Command as ProcessCommand};
+        let root = tempfile::tempdir().unwrap();
+        let repo_path = root.path().join("repo");
+        fs::create_dir(&repo_path).unwrap();
+        for args in [
+            vec!["init", "--quiet"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "--allow-empty",
+                "--quiet",
+                "-m",
+                "base",
+            ],
+        ] {
+            assert!(
+                ProcessCommand::new("git")
+                    .current_dir(&repo_path)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let repo = GitRepo::require(&repo_path).unwrap();
+        let defaults = codex_start_core::ConfigResolver::new()
+            .resolve()
+            .unwrap()
+            .config;
+        assert!(defaults.git.cleanup_untouched);
+        for (name, cleanup) in [("keep", false), ("remove", defaults.git.cleanup_untouched)] {
+            let base = root.path().join("worktrees");
+            let workspace = repo
+                .prepare_workspace(WorktreeMode::Always, Some(name), &base, "codex/")
+                .unwrap();
+            let path = workspace.host_root.clone();
+            let branch = workspace.branch.clone().unwrap();
+            drop(WorkspaceGuard {
+                cleanup_untouched: cleanup,
+                repo: Some(repo.clone()),
+                workspace,
+                worktree_base: base,
+                branch_prefix: "codex/".to_owned(),
+            });
+            assert_eq!(path.exists(), !cleanup);
+            assert_eq!(
+                ProcessCommand::new("git")
+                    .current_dir(&repo_path)
+                    .args([
+                        "show-ref",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{branch}")
+                    ])
+                    .status()
+                    .unwrap()
+                    .success(),
+                !cleanup
+            );
+        }
+    }
 
     #[test]
     fn only_enter_requests_inline_log_following() {
@@ -4591,6 +4743,7 @@ mod tests {
             proxy: ProxyConfig::default(),
             resources: codex_start_core::ResourceLimits::default(),
             sessions: codex_start_core::SessionConfig::default(),
+            adapter: codex_start_core::AdapterConfig::default(),
             updates: codex_start_core::UpdateConfig::default(),
             codex: CodexConfig {
                 profile: None,

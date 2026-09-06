@@ -23,8 +23,9 @@ function Assert-True {
 }
 
 try {
-    $Version = '1.2.3'
+    $Version = if ($env:CODEX_START_TEST_VERSION) { $env:CODEX_START_TEST_VERSION } else { '1.2.3' }
     $Tag = "v$Version"
+    $ExpectAdapter = $Version -notmatch '^0\.[01]\.'
     $ReleaseBase = Join-Path (Join-Path $TestRoot 'releases') 'download'
     $ReleaseDirectory = Join-Path $ReleaseBase $Tag
     $InstallDirectory = Join-Path $TestRoot 'codex start bin'
@@ -46,13 +47,17 @@ try {
     $ArtifactPath = Join-Path $ReleaseDirectory $ArtifactName
     $Archive = [System.IO.Compression.ZipFile]::Open($ArtifactPath, [System.IO.Compression.ZipArchiveMode]::Create)
     try {
-        $Entry = $Archive.CreateEntry('codex-start-fixture/codex-start.exe')
-        $Stream = $Entry.Open()
-        try {
-            $Bytes = [System.Text.Encoding]::UTF8.GetBytes('fixture executable')
-            $Stream.Write($Bytes, 0, $Bytes.Length)
-        } finally {
-            $Stream.Dispose()
+        $BinaryNames = @('codex-start.exe')
+        if ($ExpectAdapter) { $BinaryNames += 'codex-start-adapter.exe' }
+        foreach ($BinaryName in $BinaryNames) {
+            $Entry = $Archive.CreateEntry("codex-start-fixture/$BinaryName")
+            $Stream = $Entry.Open()
+            try {
+                $Bytes = [System.Text.Encoding]::UTF8.GetBytes('fixture executable')
+                $Stream.Write($Bytes, 0, $Bytes.Length)
+            } finally {
+                $Stream.Dispose()
+            }
         }
     } finally {
         $Archive.Dispose()
@@ -120,6 +125,11 @@ try {
     $env:CODEX_START_CONFIG_COMMAND = $ConfigCommand
     $env:CODEX_START_SKIP_PATH_UPDATE = '1'
 
+    $env:CODEX_START_INSTALL_DIR = Join-Path $TestRoot 'explicit bin'
+    & $Installer -Yes -Version $Version | Out-Null
+    Assert-True ((-not $ExpectAdapter) -or (Test-Path -LiteralPath (Join-Path $env:CODEX_START_INSTALL_DIR 'codex-start-adapter.exe'))) 'explicit version omitted adapter'
+    $env:CODEX_START_INSTALL_DIR = $InstallDirectory
+
     $StrictFailed = $false
     try { & $Installer -Yes -RequireSignature | Out-Null } catch { $StrictFailed = $true }
     Assert-True $StrictFailed '-RequireSignature succeeded without Cosign'
@@ -129,6 +139,7 @@ try {
     $env:CODEX_START_INSTALL_DIR = Join-Path $TestRoot 'signed bin'
     & $Installer -Yes -RequireSignature | Out-Null
     Assert-True (Test-Path -LiteralPath (Join-Path $env:CODEX_START_INSTALL_DIR 'codex-start.exe')) 'strict signed install did not write an executable'
+    Assert-True ((-not $ExpectAdapter) -or (Test-Path -LiteralPath (Join-Path $env:CODEX_START_INSTALL_DIR 'codex-start-adapter.exe'))) 'adapter was not installed'
     Assert-True (@([System.IO.File]::ReadAllLines($CosignLog)).Count -eq 2) 'Cosign did not verify both checksum and artifact bundles'
     Assert-True (([System.IO.File]::ReadAllText($CosignLog)) -match '--certificate-oidc-issuer https://token.actions.githubusercontent.com') 'Cosign issuer constraint was not supplied'
     $env:CODEX_START_COSIGN = 'none'

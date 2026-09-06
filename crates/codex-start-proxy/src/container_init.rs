@@ -1547,6 +1547,10 @@ fn ensure_safe_destination_directory(path: &Path) -> Result<(), InitError> {
 pub fn run_prepare_commands(spec: &InitSpec, secrets: &SecretEnvironment) -> Result<(), InitError> {
     for command in &spec.prepare {
         let mut process = build_command(spec, command, secrets);
+        // Setup must not consume client protocol input or write into its stdout stream.
+        process
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(std::io::stderr()));
         let status = process.status().map_err(|source| InitError::SpawnPrepare {
             program: command.program.clone(),
             source,

@@ -77,6 +77,13 @@ jobs:
             echo "source_date_epoch=${epoch}"
             echo "prerelease=${prerelease}"
           } >>"${GITHUB_OUTPUT}"
+      - name: Check release-version installer fixtures
+        env:
+          CODEX_START_TEST_VERSION: ${{ steps.metadata.outputs.version }}
+          CODEX_START_TEST_WINDOWS: "1"
+        run: |
+          tests/installers/test-install-sh.sh
+          pwsh -NoProfile -File tests/installers/test-install-ps1.ps1
       - name: Validate repository and release tooling
         run: |
           cargo run --locked --package xtask -- validate
@@ -187,7 +194,9 @@ jobs:
       - name: Smoke-test native release binary
         if: matrix.builder == 'native'
         shell: bash
-        run: target/${{ matrix.target }}/release/${{ matrix.binary }} --version
+        run: |
+          target/${{ matrix.target }}/release/${{ matrix.binary }} --version
+          target/${{ matrix.target }}/release/codex-start-adapter${{ endsWith(matrix.binary, '.exe') && '.exe' || '' }} install --help
       - name: Verify static musl linkage
         if: matrix.verify_static
         shell: bash
@@ -228,10 +237,12 @@ jobs:
           mkdir -p "staging/${archive}"
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
             "staging/${archive}/${{ matrix.binary }}"
+          adapter="codex-start-adapter${{ endsWith(matrix.binary, '.exe') && '.exe' || '' }}"
+          cp "target/${{ matrix.target }}/release/${adapter}" "staging/${archive}/${adapter}"
           cp README.md LICENSE LICENSE-NOTICE "staging/${archive}/"
           cargo run --quiet --locked --package xtask -- release-archive \
             "staging/${archive}" "${archive}.${{ matrix.archive_extension }}" \
-            --prefix "${archive}" --executable "${{ matrix.binary }}"
+            --prefix "${archive}" --executable "${{ matrix.binary }}" --executable "${adapter}"
           echo "archive=${archive}.${{ matrix.archive_extension }}" >>"${GITHUB_OUTPUT}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -242,7 +253,9 @@ jobs:
         if: contains(matrix.target, 'linux')
         with:
           name: release-binary-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/${{ matrix.binary }}
+          path: |
+            target/${{ matrix.target }}/release/${{ matrix.binary }}
+            target/${{ matrix.target }}/release/codex-start-adapter
           if-no-files-found: error
 
   packages:
@@ -296,6 +309,7 @@ jobs:
         run: |
           set -euo pipefail
           export NFPM_BINARY="${RUNNER_TEMP}/release-binary/codex-start"
+          export NFPM_ADAPTER="${RUNNER_TEMP}/release-binary/codex-start-adapter"
           output="codex-start-${NFPM_VERSION}-${{ matrix.target }}.${{ matrix.format }}"
           nfpm package --config packaging/nfpm.yaml \
             --packager "${{ matrix.format }}" --target "${output}"
@@ -310,15 +324,15 @@ jobs:
           case "${{ matrix.format }}" in
             deb)
               image=debian:bookworm-slim
-              command='apt-get update; apt-get install --yes "/packages/${PACKAGE}"; codex-start --version; apt-get remove --yes codex-start'
+              command='apt-get update; apt-get install --yes "/packages/${PACKAGE}"; codex-start --version; test -x /usr/bin/codex-start-adapter; apt-get remove --yes codex-start'
               ;;
             rpm)
               image=fedora:latest
-              command='dnf install --assumeyes "/packages/${PACKAGE}"; codex-start --version; dnf remove --assumeyes codex-start'
+              command='dnf install --assumeyes "/packages/${PACKAGE}"; codex-start --version; test -x /usr/bin/codex-start-adapter; dnf remove --assumeyes codex-start'
               ;;
             apk)
               image=alpine:latest
-              command='apk add --allow-untrusted "/packages/${PACKAGE}"; codex-start --version; apk del codex-start'
+              command='apk add --allow-untrusted "/packages/${PACKAGE}"; codex-start --version; test -x /usr/bin/codex-start-adapter; apk del codex-start'
               ;;
           esac
           docker run --rm --platform "${PLATFORM}" \
@@ -457,4 +471,5 @@ jobs:
           set -euo pipefail
           gh release edit "${RELEASE_TAG}" \
             --draft=false \
-            --prerelease="${PRERELEASE}"
+            --prerelease="${PRERELEASE}" \
+            --latest="$([[ "${PRERELEASE}" == true ]] && echo false || echo true)"

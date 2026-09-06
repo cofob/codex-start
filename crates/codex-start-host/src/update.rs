@@ -656,7 +656,12 @@ fn automatic_check_eligible(cli: &Cli) -> bool {
         return false;
     }
     match &cli.command {
-        Some(CliCommand::Update(_) | CliCommand::UpdateApply(_) | CliCommand::Config(_)) => false,
+        Some(
+            CliCommand::Update(_)
+            | CliCommand::UpdateApply(_)
+            | CliCommand::Config(_)
+            | CliCommand::Adapter(_),
+        ) => false,
         Some(CliCommand::Run(args)) => !args.options.dry_run && !args.options.offline,
         Some(CliCommand::Shell(args)) => !args.options.dry_run && !args.options.offline,
         Some(CliCommand::Merge(args)) => !args.options.dry_run && !args.options.offline,
@@ -1345,39 +1350,45 @@ fn install_portable(
     #[cfg(not(windows))]
     {
         let _ = restart;
-        let binary = extract_tar_binary(archive, temporary.path())?;
-        let parent = executable.parent().ok_or_else(|| HostError::UnsafePath {
-            path: executable.to_path_buf(),
-            reason: "executable has no parent directory".to_owned(),
-        })?;
-        let mut staged = match tempfile::NamedTempFile::new_in(parent) {
-            Ok(staged) => staged,
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                return install_portable_privileged(&binary, executable);
-            }
-            Err(source) => return Err(HostError::io(parent, source)),
-        };
-        let mut source =
-            fs::File::open(&binary).map_err(|source| HostError::io(&binary, source))?;
-        std::io::copy(&mut source, &mut staged)
-            .map_err(|source| HostError::io(staged.path(), source))?;
-        staged
-            .as_file()
-            .sync_all()
-            .map_err(|source| HostError::io(staged.path(), source))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(staged.path(), fs::Permissions::from_mode(0o755))
-                .map_err(|source| HostError::io(staged.path(), source))?;
+        let binary = extract_tar_binary(archive, temporary.path(), "codex-start")?;
+        let adapter = extract_tar_binary(archive, temporary.path(), "codex-start-adapter")?;
+        replace_portable_binary(&adapter, &executable.with_file_name("codex-start-adapter"))?;
+        replace_portable_binary(&binary, executable)
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_portable_binary(binary: &Path, executable: &Path) -> Result<()> {
+    let parent = executable.parent().ok_or_else(|| HostError::UnsafePath {
+        path: executable.to_path_buf(),
+        reason: "executable has no parent directory".to_owned(),
+    })?;
+    let mut staged = match tempfile::NamedTempFile::new_in(parent) {
+        Ok(staged) => staged,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            return install_portable_privileged(binary, executable);
         }
-        match staged.persist(executable) {
-            Ok(_) => Ok(()),
-            Err(error) if error.error.kind() == std::io::ErrorKind::PermissionDenied => {
-                install_portable_privileged(error.file.path(), executable)
-            }
-            Err(error) => Err(HostError::io(executable, error.error)),
+        Err(source) => return Err(HostError::io(parent, source)),
+    };
+    let mut source = fs::File::open(binary).map_err(|source| HostError::io(binary, source))?;
+    std::io::copy(&mut source, &mut staged)
+        .map_err(|source| HostError::io(staged.path(), source))?;
+    staged
+        .as_file()
+        .sync_all()
+        .map_err(|source| HostError::io(staged.path(), source))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(staged.path(), fs::Permissions::from_mode(0o755))
+            .map_err(|source| HostError::io(staged.path(), source))?;
+    }
+    match staged.persist(executable) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::PermissionDenied => {
+            install_portable_privileged(error.file.path(), executable)
         }
+        Err(error) => Err(HostError::io(executable, error.error)),
     }
 }
 
@@ -1426,8 +1437,7 @@ fn install_portable_privileged(source: &Path, executable: &Path) -> Result<()> {
 #[cfg(not(windows))]
 fn run_privileged_update_command(program: &str, args: Vec<OsString>) -> Result<()> {
     let root = run_capture(&CommandSpec::new("id").args(["-u"]))
-        .ok()
-        .is_some_and(|output| output.status.success() && output.stdout_text() == "0");
+        .is_ok_and(|output| output.status.success() && output.stdout_text() == "0");
     let spec = if root {
         CommandSpec::new(program).args(args)
     } else {
@@ -1445,10 +1455,10 @@ fn run_privileged_update_command(program: &str, args: Vec<OsString>) -> Result<(
 }
 
 #[cfg(not(windows))]
-fn extract_tar_binary(archive: &Path, destination: &Path) -> Result<PathBuf> {
+fn extract_tar_binary(archive: &Path, destination: &Path, name: &str) -> Result<PathBuf> {
     let file = fs::File::open(archive).map_err(|source| HostError::io(archive, source))?;
     let mut tar = tar::Archive::new(GzDecoder::new(file));
-    let output = destination.join("codex-start");
+    let output = destination.join(name);
     let mut found = false;
     for entry in tar
         .entries()
@@ -1465,11 +1475,11 @@ fn extract_tar_binary(archive: &Path, destination: &Path) -> Result<PathBuf> {
                 reason: "release archive entry is unsafe".to_owned(),
             });
         }
-        if path.file_name() == Some(OsStr::new("codex-start")) {
+        if path.file_name() == Some(OsStr::new(name)) {
             if found || !entry.header().entry_type().is_file() || entry.size() > EXECUTABLE_LIMIT {
-                return Err(HostError::Runtime(
-                    "release archive does not contain one regular codex-start binary".to_owned(),
-                ));
+                return Err(HostError::Runtime(format!(
+                    "release archive does not contain one regular {name} binary"
+                )));
             }
             let mut file =
                 fs::File::create(&output).map_err(|source| HostError::io(&output, source))?;
@@ -1479,9 +1489,9 @@ fn extract_tar_binary(archive: &Path, destination: &Path) -> Result<PathBuf> {
         }
     }
     if !found {
-        return Err(HostError::NotFound(
-            "codex-start binary in release archive".to_owned(),
-        ));
+        return Err(HostError::NotFound(format!(
+            "{name} binary in release archive"
+        )));
     }
     Ok(output)
 }
@@ -1501,6 +1511,7 @@ struct WindowsApplyState {
     restart: bool,
     arguments: Vec<String>,
     cwd: PathBuf,
+    adapter_source: PathBuf,
 }
 
 #[cfg(windows)]
@@ -1510,7 +1521,8 @@ fn install_portable_windows(
     temporary: TempDir,
     restart: bool,
 ) -> Result<()> {
-    let binary = extract_zip_binary(archive, temporary.path())?;
+    let binary = extract_zip_binary(archive, temporary.path(), "codex-start.exe")?;
+    let adapter = extract_zip_binary(archive, temporary.path(), "codex-start-adapter.exe")?;
     let directory = temporary.keep();
     let source = directory.join("codex-start.new.exe");
     fs::rename(&binary, &source).map_err(|error| HostError::io(&source, error))?;
@@ -1518,6 +1530,7 @@ fn install_portable_windows(
     fs::copy(executable, &helper).map_err(|error| HostError::io(&helper, error))?;
     let arguments = directory.join("apply.json");
     let state = WindowsApplyState {
+        adapter_source: adapter,
         restart,
         arguments: std::env::args_os()
             .skip(1)
@@ -1564,11 +1577,11 @@ fn install_portable_windows(
 }
 
 #[cfg(windows)]
-fn extract_zip_binary(archive: &Path, destination: &Path) -> Result<PathBuf> {
+fn extract_zip_binary(archive: &Path, destination: &Path, name: &str) -> Result<PathBuf> {
     let file = fs::File::open(archive).map_err(|source| HostError::io(archive, source))?;
     let mut zip = zip::ZipArchive::new(file)
         .map_err(|error| HostError::Runtime(format!("open release ZIP: {error}")))?;
-    let output = destination.join("codex-start.exe");
+    let output = destination.join(name);
     let mut found = false;
     for index in 0..zip.len() {
         let mut entry = zip
@@ -1578,11 +1591,11 @@ fn extract_zip_binary(archive: &Path, destination: &Path) -> Result<PathBuf> {
             path: PathBuf::from(entry.name()),
             reason: "release ZIP entry escapes its root".to_owned(),
         })?;
-        if path.file_name() == Some(OsStr::new("codex-start.exe")) {
+        if path.file_name() == Some(OsStr::new(name)) {
             if found || entry.is_dir() || entry.size() > EXECUTABLE_LIMIT {
-                return Err(HostError::Runtime(
-                    "release ZIP does not contain one regular codex-start.exe".to_owned(),
-                ));
+                return Err(HostError::Runtime(format!(
+                    "release ZIP does not contain one regular {name}"
+                )));
             }
             let mut file =
                 fs::File::create(&output).map_err(|source| HostError::io(&output, source))?;
@@ -1592,9 +1605,7 @@ fn extract_zip_binary(archive: &Path, destination: &Path) -> Result<PathBuf> {
         }
     }
     if !found {
-        return Err(HostError::NotFound(
-            "codex-start.exe in release ZIP".to_owned(),
-        ));
+        return Err(HostError::NotFound(format!("{name} in release ZIP")));
     }
     Ok(output)
 }
@@ -1617,6 +1628,8 @@ pub(crate) fn apply_staged(args: UpdateApplyArgs) -> Result<u8> {
         if !args.source.is_absolute()
             || !args.destination.is_absolute()
             || args.source.parent() != args.arguments.parent()
+            || state.adapter_source.parent() != args.arguments.parent()
+            || state.adapter_source.file_name() != Some(OsStr::new("codex-start-adapter.exe"))
         {
             return Err(HostError::UnsafePath {
                 path: args.source,
@@ -1631,37 +1644,51 @@ pub(crate) fn apply_staged(args: UpdateApplyArgs) -> Result<u8> {
                 reason: "apply state has no parent".to_owned(),
             })?
             .join("codex-start.previous.exe");
-        let mut replaced = false;
-        for _ in 0..300 {
-            match fs::rename(&args.destination, &backup) {
-                Ok(()) => {
-                    if let Err(source) = fs::copy(&args.source, &args.destination) {
-                        let _ = fs::remove_file(&args.destination);
-                        if let Err(rollback) = fs::rename(&backup, &args.destination) {
-                            return Err(HostError::Runtime(format!(
-                                "copy staged Windows update: {source}; restore previous executable: {rollback}"
-                            )));
-                        }
-                        return Err(HostError::io(&args.destination, source));
-                    }
-                    replaced = true;
-                    break;
-                }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
-                    ) =>
-                {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(source) => return Err(HostError::io(&args.destination, source)),
+        let adapter_destination = args.destination.with_file_name("codex-start-adapter.exe");
+        for (source, destination, previous) in [
+            (
+                &state.adapter_source,
+                &adapter_destination,
+                backup.with_file_name("codex-start-adapter.previous.exe"),
+            ),
+            (&args.source, &args.destination, backup),
+        ] {
+            if !destination.exists() {
+                fs::copy(source, destination).map_err(|error| HostError::io(destination, error))?;
+                continue;
             }
-        }
-        if !replaced {
-            return Err(HostError::Runtime(
-                "timed out waiting to replace the running Windows executable".to_owned(),
-            ));
+            let mut replaced = false;
+            for _ in 0..300 {
+                match fs::rename(destination, &previous) {
+                    Ok(()) => {
+                        if let Err(copy_error) = fs::copy(source, destination) {
+                            let _ = fs::remove_file(destination);
+                            if let Err(rollback) = fs::rename(&previous, destination) {
+                                return Err(HostError::Runtime(format!(
+                                    "copy staged Windows update: {copy_error}; restore previous executable: {rollback}"
+                                )));
+                            }
+                            return Err(HostError::io(destination, copy_error));
+                        }
+                        replaced = true;
+                        break;
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+                        ) =>
+                    {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    Err(source) => return Err(HostError::io(destination, source)),
+                }
+            }
+            if !replaced {
+                return Err(HostError::Runtime(
+                    "timed out waiting to replace the running Windows executable".to_owned(),
+                ));
+            }
         }
         if state.restart {
             Command::new(&args.destination)
@@ -1741,6 +1768,84 @@ fn automatic_check_due(state: &UpdateState, interval_hours: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stable_channel_rejects_rc_and_never_downgrades_it() {
+        let metadata = |tag: &str| GitHubRelease {
+            id: 1,
+            tag_name: tag.into(),
+            html_url: "https://github.com/cofob/codex-start/releases".into(),
+        };
+        assert!(parse_release(metadata("v0.2.0-rc.1"), vec![]).is_err());
+        let stable = parse_release(metadata("v0.1.6"), vec![]).unwrap();
+        assert!(stable.version < Version::parse("0.2.0-rc.1").unwrap());
+        assert!(Version::parse("0.2.0-rc.1").unwrap() < Version::parse("0.2.0").unwrap());
+        let current = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        if !current.pre.is_empty() {
+            let tag = format!("v{}.{}.{}", current.major, current.minor, current.patch);
+            let release = parse_release(metadata(&tag), vec![]).unwrap();
+            assert!(update_check(&release).unwrap().available);
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn portable_update_replaces_both_binaries_and_rejects_incomplete_archives() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("codex-start");
+        let adapter = root.path().join("codex-start-adapter");
+        fs::write(&executable, b"old launcher").unwrap();
+        fs::write(&adapter, b"old adapter").unwrap();
+        for complete in [false, true] {
+            let archive = root.path().join("release.tar.gz");
+            let writer = flate2::write::GzEncoder::new(
+                fs::File::create(&archive).unwrap(),
+                flate2::Compression::default(),
+            );
+            let mut tar = tar::Builder::new(writer);
+            let entries = if complete {
+                vec![
+                    ("codex-start", "new launcher"),
+                    ("codex-start-adapter", "new adapter"),
+                ]
+            } else {
+                vec![("codex-start", "new launcher")]
+            };
+            for (name, data) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o755);
+                header.set_cksum();
+                tar.append_data(&mut header, format!("release/{name}"), data.as_bytes())
+                    .unwrap();
+            }
+            tar.into_inner().unwrap().finish().unwrap();
+            let result =
+                install_portable(&archive, &executable, tempfile::tempdir().unwrap(), false);
+            assert_eq!(result.is_ok(), complete);
+            assert_eq!(
+                fs::read_to_string(&executable).unwrap(),
+                if complete {
+                    "new launcher"
+                } else {
+                    "old launcher"
+                }
+            );
+            assert_eq!(
+                fs::read_to_string(&adapter).unwrap(),
+                if complete {
+                    "new adapter"
+                } else {
+                    "old adapter"
+                }
+            );
+        }
+        assert_ne!(
+            fs::metadata(&adapter).unwrap().permissions().mode() & 0o111,
+            0
+        );
+    }
 
     #[test]
     fn checksum_parser_rejects_duplicates_and_unsafe_names() {

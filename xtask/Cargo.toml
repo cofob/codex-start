@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 clap.workspace = true
-codex-start-core = { version = "0.1.0", path = "../crates/codex-start-core" }
+codex-start-core = { version = "0.2.0-rc.1", path = "../crates/codex-start-core" }
 flate2.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -42,6 +42,8 @@ jobs:
           sh -n install.sh
           sh -n tests/installers/test-install-sh.sh
           tests/installers/test-install-sh.sh
+          CODEX_START_TEST_VERSION=0.1.6 tests/installers/test-install-sh.sh
+          CODEX_START_TEST_VERSION=0.2.0-rc.1 tests/installers/test-install-sh.sh
       - name: Parse and exercise the PowerShell installer
         shell: pwsh
         env:
@@ -55,6 +57,10 @@ jobs:
             [ref] $errors
           ) | Out-Null
           if ($errors.Count -ne 0) { throw ($errors | Out-String) }
+          ./tests/installers/test-install-ps1.ps1
+          $env:CODEX_START_TEST_VERSION = '0.1.6'
+          ./tests/installers/test-install-ps1.ps1
+          $env:CODEX_START_TEST_VERSION = '0.2.0-rc.1'
           ./tests/installers/test-install-ps1.ps1
 
   windows:
@@ -81,6 +87,10 @@ jobs:
             [ref] $errors
           ) | Out-Null
           if ($errors.Count -ne 0) { throw ($errors | Out-String) }
+          ./tests/installers/test-install-ps1.ps1
+          $env:CODEX_START_TEST_VERSION = '0.1.6'
+          ./tests/installers/test-install-ps1.ps1
+          $env:CODEX_START_TEST_VERSION = '0.2.0-rc.1'
           ./tests/installers/test-install-ps1.ps1
       - run: cargo check --locked --workspace --all-targets --all-features
       - run: cargo test --locked --workspace --all-features
@@ -478,6 +488,7 @@ jobs:
           worktree = "never"
           home = "default"
           tty = "never"
+          rebuild = true
 
           [settings.secret_refs]
           CODEX_START_CI_SECRET = "ci-environment"
