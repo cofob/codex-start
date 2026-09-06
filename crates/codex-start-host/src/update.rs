@@ -1306,8 +1306,7 @@ fn install_package(method: &str, package: &Path) -> Result<()> {
             }
         };
         let root = run_capture(&CommandSpec::new("id").args(["-u"]))
-            .ok()
-            .is_some_and(|output| output.status.success() && output.stdout_text() == "0");
+            .is_ok_and(|output| output.status.success() && output.stdout_text() == "0");
         let spec = if root {
             CommandSpec::new(program).args(args)
         } else {
