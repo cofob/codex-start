@@ -1304,7 +1304,7 @@ fn resolve_run_with_config(
             .validate_project(context.project_root())
             .map_err(|error| HostError::Config(error.to_string()))?;
     }
-    let image = catalog.image_tag(&environment)?;
+    let image = catalog.run_image_tag(&environment, config.rebuild)?;
     let project_id = context.repo.as_ref().map_or_else(
         || {
             codex_start_core::ProjectIdentity::directory(context.project_root(), &context.cwd)
@@ -2002,6 +2002,7 @@ async fn execute_prepared_run(
             proxy: &launch.config.proxy,
             authentication: host.egress_authentication.as_ref(),
             rebuild_sidecar: launch.config.rebuild,
+            pull_sidecar: args.options.pull,
         },
     )?;
     let mut files = prepare_container_files(context, &launch, &prepared, &host, &network)?;
@@ -2241,6 +2242,7 @@ fn preview_topology(options: &PreviewPlanOptions<'_>) -> Result<PreviewTopology>
         &policy.allowed_hosts,
         &policy.allow_private,
         config.proxy.listen_port,
+        config.rebuild,
     )?;
     Ok(PreviewTopology {
         run_uuid,
@@ -2610,6 +2612,7 @@ fn preview_network_plan(
     allow_hosts: &[String],
     allow_private: &[String],
     proxy_port: u16,
+    rebuild: bool,
 ) -> Result<NetworkPlan> {
     match mode {
         NetworkMode::Bridge => Ok(NetworkPlan::bridge()),
@@ -2623,7 +2626,11 @@ fn preview_network_plan(
                 network_name.clone(),
                 ProxyPlan {
                     name: limited_name(&format!("{run_name}-proxy")),
-                    image: sidecar_image_tag(catalog.assets_root(), catalog.sidecar_build_args())?,
+                    image: if rebuild {
+                        sidecar_image_tag(catalog.assets_root(), catalog.sidecar_build_args())?
+                    } else {
+                        crate::environments::published_image("sidecar")
+                    },
                     network_name,
                     egress_network_name: limited_name(&format!("{run_name}-egress-net")),
                     listen_port: proxy_port,

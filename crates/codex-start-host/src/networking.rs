@@ -166,6 +166,7 @@ pub struct NetworkOptions<'a> {
     pub proxy: &'a ProxyConfig,
     pub authentication: Option<&'a EgressAuthentication>,
     pub rebuild_sidecar: bool,
+    pub pull_sidecar: bool,
 }
 
 impl<'a> NetworkSession<'a> {
@@ -235,6 +236,7 @@ impl<'a> NetworkSession<'a> {
             options.assets_root,
             options.sidecar_build_args,
             options.rebuild_sidecar,
+            options.pull_sidecar,
         )?;
         let sidecar_name = limited_name(&format!("{}-proxy", options.run_name));
         remove_owned_container(runtime, &sidecar_name, options.labels)?;
@@ -483,13 +485,23 @@ fn sidecar_command(options: &NetworkOptions<'_>) -> Vec<OsString> {
     command
 }
 
-/// Build or reuse the content-addressed Rust sidecar image.
+/// Pull or reuse the release sidecar, or build it when explicitly requested.
 pub fn ensure_sidecar_image(
     runtime: &Runtime,
     root: &Path,
     build_args: &BTreeMap<String, String>,
     rebuild: bool,
+    pull: bool,
 ) -> Result<String> {
+    if !rebuild {
+        let image = crate::environments::published_image("sidecar");
+        if (pull || !runtime.image_exists(&image)?) && runtime.pull(&image)? != 0 {
+            return Err(HostError::Runtime(format!(
+                "pulling {image} failed; use --rebuild to build locally"
+            )));
+        }
+        return Ok(image);
+    }
     let image = sidecar_image_tag(root, build_args)?;
     let root = root.to_path_buf();
     let dockerfile = root.join("images/sidecar/Dockerfile");

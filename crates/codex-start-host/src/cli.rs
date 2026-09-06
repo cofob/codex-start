@@ -155,11 +155,11 @@ pub struct RunOptions {
     #[arg(short = 'p', long = "publish", value_name = "SPEC")]
     pub publish: Vec<PortSpec>,
 
-    /// Rebuild the environment image even when the content hash exists.
+    /// Build the environment and sidecar images locally.
     #[arg(long)]
     pub rebuild: bool,
 
-    /// Pull locked images instead of building when possible.
+    /// Refresh published images, even when they exist locally.
     #[arg(long)]
     pub pull: bool,
 
@@ -256,11 +256,11 @@ pub struct MergeRunOptions {
     #[arg(short = 'p', long = "publish", value_name = "SPEC")]
     pub publish: Vec<PortSpec>,
 
-    /// Rebuild the environment image even when the content hash exists.
+    /// Build the environment and sidecar images locally.
     #[arg(long)]
     pub rebuild: bool,
 
-    /// Pull locked images instead of building when possible.
+    /// Refresh published images, even when they exist locally.
     #[arg(long)]
     pub pull: bool,
 

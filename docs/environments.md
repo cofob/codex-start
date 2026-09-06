@@ -75,7 +75,7 @@ codex-start overrides the workload entrypoint and invokes:
 
 A custom `image` or `[build]` must therefore provide a Linux binary at `/usr/local/bin/codex-start-init` built from the same codex-start release as the host launcher. The image must start as root so init can prepare mount ownership and then drop to the mapped host UID/GID. It must also provide `/home/codex`, the selected environment tools, and `codex` on `PATH` for `run`; the default `shell` command additionally expects `bash -l`.
 
-If `forwarding.host_ssh` is enabled and allowlist networking is used, the image also needs the matching `/usr/local/bin/codex-start-host-ssh`. Browser and OAuth client-side functions are subcommands of `codex-start-init`. The allowlist egress proxy is a separate content-addressed sidecar image and need not be copied into the workload image. The shipped environment Dockerfile is the reference implementation of this contract.
+If `forwarding.host_ssh` is enabled and allowlist networking is used, the image also needs the matching `/usr/local/bin/codex-start-host-ssh`. Browser and OAuth client-side functions are subcommands of `codex-start-init`. The allowlist egress proxy is a separate versioned sidecar image and need not be copied into the workload image. The shipped environment Dockerfile is the reference implementation of this contract.
 
 ## Image selection and updates
 
@@ -83,11 +83,15 @@ If `forwarding.host_ssh` is enabled and allowlist networking is used, the image 
 
 Normal behavior is:
 
-- a build-backed environment is built only when its content tag is absent, or with `--rebuild` (which also disables the build cache);
-- an `image` reference is pulled when absent, or every time with `--pull`;
-- `--pull` on a shipped build-backed environment pulls `codex-start-NAME:v<codex-start-version>` from `CODEX_START_IMAGE_REGISTRY`, defaulting to `ghcr.io/cofob`;
+- shipped environments and the allowlist sidecar use `codex-start-NAME:v<codex-start-version>` from `CODEX_START_IMAGE_REGISTRY`, which defaults to `ghcr.io/cofob`;
+- published images are pulled when absent and then reused from the local cache; `--pull` refreshes them;
+- `--rebuild` builds the environment and sidecar locally; it takes priority over `--pull` for shipped images;
+- custom build-backed environments use local content tags and build when absent or with `--rebuild`;
+- a custom `image` reference is pulled when absent, or every time with `--pull`;
 - `--pull` is rejected for a custom build-backed environment; use `--rebuild` instead;
-- the allowlist sidecar is built locally from the embedded bundle when its content tag is absent, or rebuilt with `--rebuild`.
+- a failed pull returns an error; it does not start a local build.
+
+Local builds use the embedded build bundle. `--rebuild` disables the build cache. Changes to the user lock affect local builds, not published release images.
 
 `codex-start env update --check` compares `$XDG_CONFIG_HOME/codex-start/images.lock.toml` with the lock embedded in the installed binary. `codex-start env update` copies that embedded lock into the user configuration directory. It does not query registries or discover newer upstream releases; install a newer codex-start binary first when you want a newer embedded lock. Ordinary runs never rewrite this file.
 

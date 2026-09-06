@@ -31,6 +31,18 @@ const BUILT_INS: [(&str, &str); 4] = [
     ),
 ];
 
+/// Versioned image published for this release.
+pub(crate) fn published_image(name: &str) -> String {
+    let registry =
+        std::env::var("CODEX_START_IMAGE_REGISTRY").unwrap_or_else(|_| "ghcr.io/cofob".to_owned());
+    format!(
+        "{}/codex-start-{}:v{}",
+        registry.trim_end_matches('/'),
+        name,
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 /// Loaded environment definitions and source locations.
 #[derive(Clone, Debug)]
 pub struct EnvironmentCatalog {
@@ -220,7 +232,27 @@ impl EnvironmentCatalog {
         ))
     }
 
-    /// Ensure a build-backed image exists, rebuilding when requested.
+    /// Select a published image for shipped environments unless rebuilding.
+    pub fn run_image_tag(
+        &self,
+        environment: &ResolvedEnvironment,
+        rebuild: bool,
+    ) -> Result<String> {
+        if !rebuild && self.uses_published_image(environment) {
+            return Ok(published_image(&environment.name));
+        }
+        self.image_tag(environment)
+    }
+
+    fn uses_published_image(&self, environment: &ResolvedEnvironment) -> bool {
+        environment.build.is_some()
+            && self
+                .registry
+                .source(&environment.name)
+                .is_some_and(|source| source.built_in)
+    }
+
+    /// Reuse or pull shipped images; build custom environments or explicit rebuilds.
     pub fn ensure_image(
         &self,
         runtime: &Runtime,
@@ -229,30 +261,20 @@ impl EnvironmentCatalog {
         no_cache: bool,
         pull: bool,
     ) -> Result<String> {
-        let image = self.image_tag(environment)?;
-        if pull && environment.build.is_some() {
-            let built_in = self
-                .registry
-                .source(&environment.name)
-                .is_some_and(|source| source.built_in);
-            if !built_in {
-                return Err(HostError::Config(
-                    "--pull supports shipped environments or a custom immutable `image`; custom builds use --rebuild"
-                        .to_owned(),
-                ));
+        if pull && environment.build.is_some() && !self.uses_published_image(environment) {
+            return Err(HostError::Config(
+                "--pull supports shipped environments or a custom immutable `image`; custom builds use --rebuild"
+                    .to_owned(),
+            ));
+        }
+        let image = self.run_image_tag(environment, rebuild)?;
+        if !rebuild && self.uses_published_image(environment) {
+            if (pull || !runtime.image_exists(&image)?) && runtime.pull(&image)? != 0 {
+                return Err(HostError::Runtime(format!(
+                    "pulling {image} failed; use --rebuild to build locally"
+                )));
             }
-            let registry = std::env::var("CODEX_START_IMAGE_REGISTRY")
-                .unwrap_or_else(|_| "ghcr.io/cofob".to_owned());
-            let remote = format!(
-                "{}/codex-start-{}:v{}",
-                registry.trim_end_matches('/'),
-                environment.name,
-                env!("CARGO_PKG_VERSION")
-            );
-            if runtime.pull(&remote)? != 0 {
-                return Err(HostError::Runtime(format!("pulling {remote} failed")));
-            }
-            return Ok(remote);
+            return Ok(image);
         }
         if environment.build.is_some() && (rebuild || !runtime.image_exists(&image)?) {
             let request = self
@@ -700,6 +722,14 @@ mod tests {
         for name in catalog.names() {
             let environment = catalog.resolve(name).expect("resolve");
             assert!(environment.build.is_some() || environment.image.is_some());
+            assert_eq!(
+                catalog.run_image_tag(&environment, false).unwrap(),
+                super::published_image(name)
+            );
+            assert_eq!(
+                catalog.run_image_tag(&environment, true).unwrap(),
+                catalog.image_tag(&environment).unwrap()
+            );
             let request = catalog
                 .build_request(&environment, format!("test/{name}:locked"), false)
                 .expect("build paths")
@@ -755,6 +785,7 @@ mod tests {
         }
         fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).expect("mode");
         let regular = catalog.image_tag(&environment).expect("regular tag");
+        assert_eq!(catalog.run_image_tag(&environment, false).unwrap(), regular);
         fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).expect("mode");
         let executable = catalog.image_tag(&environment).expect("executable tag");
         assert_ne!(regular, executable);

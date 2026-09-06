@@ -1461,6 +1461,89 @@ mod tests {
     }
 
     #[test]
+    fn published_images_use_cache_pull_and_never_build_on_pull_failure() {
+        use crate::environments::{EnvironmentCatalog, published_image};
+        use crate::networking::ensure_sidecar_image;
+        use crate::paths::AppPaths;
+
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            cache: root.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let catalog = EnvironmentCatalog::load(&paths).unwrap();
+        let environment = catalog.resolve("generic").unwrap();
+        let executable = root.path().join("mock-docker");
+        let log = root.path().join("calls");
+        let runtime = Runtime {
+            kind: RuntimeKind::Docker,
+            program: executable.clone().into(),
+        };
+        for (cached, refresh, pull_status, expected) in [
+            (true, false, 0, vec!["image", "image"]),
+            (false, false, 0, vec!["image", "pull", "image", "pull"]),
+            (true, true, 0, vec!["pull", "pull"]),
+            (false, false, 1, vec!["image", "pull", "image", "pull"]),
+        ] {
+            fs::write(&log, "").unwrap();
+            let script = format!(
+                "#!/bin/sh\necho \"$1\" >> '{}'\ncase \"$1\" in image) exit {};; pull) exit {pull_status};; *) exit 99;; esac\n",
+                log.display(),
+                u8::from(!cached)
+            );
+            write_fake_executable(&executable, script.as_bytes());
+            let workload = catalog.ensure_image(&runtime, &environment, false, false, refresh);
+            // Missing sources must not prevent a published sidecar from running.
+            let sidecar = ensure_sidecar_image(
+                &runtime,
+                &root.path().join("absent"),
+                &BTreeMap::new(),
+                false,
+                refresh,
+            );
+            if pull_status == 0 {
+                assert_eq!(workload.unwrap(), published_image("generic"));
+                assert_eq!(sidecar.unwrap(), published_image("sidecar"));
+            } else {
+                assert!(workload.unwrap_err().to_string().contains("--rebuild"));
+                assert!(sidecar.unwrap_err().to_string().contains("--rebuild"));
+            }
+            assert_eq!(
+                fs::read_to_string(&log)
+                    .unwrap()
+                    .lines()
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        fs::write(&log, "").unwrap();
+        write_fake_executable(
+            &executable,
+            format!(
+                "#!/bin/sh\necho \"$1\" >> '{}'\ntest \"$1\" = build\n",
+                log.display()
+            )
+            .as_bytes(),
+        );
+        let workload = catalog
+            .ensure_image(&runtime, &environment, true, true, true)
+            .unwrap();
+        let sidecar = ensure_sidecar_image(
+            &runtime,
+            catalog.assets_root(),
+            catalog.sidecar_build_args(),
+            true,
+            true,
+        )
+        .unwrap();
+        assert!(workload.starts_with("codex-start-env-generic:"));
+        assert!(sidecar.starts_with("codex-start-sidecar:"));
+        assert_eq!(fs::read_to_string(&log).unwrap(), "build\nbuild\n");
+    }
+
+    #[test]
     fn renders_portable_run_command_without_a_shell() {
         let request = RunRequest {
             name: "codex-test".to_owned(),
