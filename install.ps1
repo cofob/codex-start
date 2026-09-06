@@ -88,7 +88,7 @@ function Receive-File {
             if ($Response.RequestMessage.RequestUri.Scheme -ne 'https') {
                 throw "download redirected to a non-HTTPS URL: $($Response.RequestMessage.RequestUri)"
             }
-            if ($Response.Content.Headers.ContentLength -and $Response.Content.Headers.ContentLength.Value -gt $MaximumBytes) {
+            if ($Response.Content.Headers.ContentLength -and $Response.Content.Headers.ContentLength -gt $MaximumBytes) {
                 throw "download exceeds the $MaximumBytes byte limit: $Uri"
             }
             $InputStream = $Response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()

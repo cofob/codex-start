@@ -15,6 +15,7 @@ if (-not $RunningOnWindows -and -not $SimulatedWindows) {
 
 $Root = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $PSScriptRoot '..') '..'))
 $Installer = Join-Path $Root 'install.ps1'
+& (Join-Path $PSScriptRoot 'test-download-ps1.ps1')
 $TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-start-installer-test-" + [Guid]::NewGuid().ToString('N'))
 
 function Assert-True {
