@@ -1,0 +1,2335 @@
+{
+  "baseline": "ad931a45b201e3877d6ba542ba5dbbd85e7e31b4",
+  "complete": false,
+  "note": "Native controls replace the host action catalogue. Source mappings do not prove live acceptance. Host-owned and platform-specific contracts are explicit; pending entries block release.",
+  "entries": [
+    {
+      "kind": "ClientRequest",
+      "method": "initialize",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "automatic",
+      "implementation": "crates/codex-start-host/src/remote/sessions.rs; host handshake"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "server/diagnostics",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "userVerification/status",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "host-component-required",
+      "implementation": "Host device signing and user verification require the host component; Android pairing uses registered device credentials"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "userVerification/enroll",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "host-component-required",
+      "implementation": "Host device signing and user verification require the host component; Android pairing uses registered device credentials"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "userVerification/delete",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "host-component-required",
+      "implementation": "Host device signing and user verification require the host component; Android pairing uses registered device credentials"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "userVerification/verify",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "host-component-required",
+      "implementation": "Host device signing and user verification require the host component; Android pairing uses registered device credentials"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/start",
+      "verification": "real Codex fixture chat creation; final navigation acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConversationScreen.kt / ProjectScreens.kt / TasksScreen.kt",
+      "surface": "Chat; Projects; Sessions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/resume",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "automatic",
+      "implementation": "ConversationScreen.kt enables writing through thread/writeAccess; remote/sessions.rs resumes or routes to the existing writer"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/fork",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConversationScreen.kt / TaskControls.kt",
+      "surface": "Chat; Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/archive",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/delete",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/unsubscribe",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "host-owned",
+      "implementation": "remote/sessions.rs owns shared subscriptions; closing a mobile screen does not unload another client’s chat"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/increment_elicitation",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "host-owned",
+      "implementation": "Codex client manages its own elicitation counter; Approvals.kt answers forwarded requests"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/decrement_elicitation",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "host-owned",
+      "implementation": "Codex client manages its own elicitation counter; Approvals.kt answers forwarded requests"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/name/set",
+      "verification": "real Codex navigation fixture exercised native rename; full navigation acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/goal/set",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/goal/get",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/goal/clear",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/queue/add",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConversationScreen.kt / TaskControls.kt",
+      "surface": "Chat; Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/queue/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/queue/update",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/queue/delete",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/queue/reorder",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/queue/start",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/metadata/update",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt / ChatDetails.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/section/move",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/settings/update",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ModelOptions.kt / HostPreferences.kt",
+      "surface": "Chat > Message options; Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/memoryMode/set",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "memory/reset",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/unarchive",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/compact/start",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/shellCommand",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/approveGuardianDeniedAction",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "host-component-required",
+      "implementation": "Requires an exact host guardian assessment; generic override controls are not exposed"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/backgroundTerminals/clean",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ChatDetails.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/backgroundTerminals/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt / ChatDetails.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/backgroundTerminals/terminate",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ChatDetails.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/rollback",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/revert",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt / TaskTools.kt / ProjectScreens.kt / TasksScreen.kt",
+      "surface": "Library; Projects; Sessions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "project/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt / RemoteRepository.kt / ChatDetails.kt",
+      "surface": "Library; Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "project/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt",
+      "surface": "Library"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "project/create",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt",
+      "surface": "Library"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "project/import",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt",
+      "surface": "Library"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "project/update",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt",
+      "surface": "Library"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "project/move",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt",
+      "surface": "Library"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "project/delete",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt",
+      "surface": "Library"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "threadSection/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt / TaskControls.kt",
+      "surface": "Settings; Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "threadSection/create",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "threadSection/update",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "threadSection/delete",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/search",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "AppNavigation.kt",
+      "surface": "Navigation > Search"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/searchOccurrences",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConversationScreen.kt / TaskControls.kt / ChatDetails.kt",
+      "surface": "Chat; Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/loaded/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ServerSwitcher.kt / TaskTools.kt / ProjectScreens.kt",
+      "surface": "Projects"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "MainActivity.kt / ConversationScreen.kt / ServerSwitcher.kt / TaskTools.kt / ProjectScreens.kt / TaskControls.kt",
+      "surface": "Chat; Projects; Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/turns/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "DiffScreen.kt / TaskControls.kt",
+      "surface": "Changes; Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/items/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "Attachments.kt / ConversationScreen.kt / TaskTools.kt / DiffScreen.kt",
+      "surface": "Chat; Changes"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/inject_items",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "host-owned",
+      "implementation": "Host history injection is not a user chat action; ConversationScreen.kt submits typed messages"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "skills/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt / SkillDetails.kt",
+      "surface": "Plugins, Skills, Connections and Account; Skills > Skill details and folders"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "skills/extraRoots/set",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "SkillDetails.kt",
+      "surface": "Skills > Skill details and folders"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "hooks/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "marketplace/add",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "marketplace/remove",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "marketplace/upgrade",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/search",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "FeatureScreens.kt searches the loaded plugin catalogue"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/installed",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt / RemoteRepository.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/reconcile",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/skill/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "SkillDetails.kt",
+      "surface": "Skills > Skill details and folders"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/share/save",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt",
+      "surface": "Library"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/share/updateTargets",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt",
+      "surface": "Library"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/share/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt",
+      "surface": "Library"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/share/checkout",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt",
+      "surface": "Library"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/share/delete",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "NativeLibrary.kt",
+      "surface": "Library"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "app/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConnectedTools.kt",
+      "surface": "Connections"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "app/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConnectedTools.kt",
+      "surface": "Connections"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "app/installed",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConnectedTools.kt",
+      "surface": "Connections"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fs/readFile",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "FileBrowser.kt and Attachments.kt use bounded gateway downloads"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fs/writeFile",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FileBrowser.kt",
+      "surface": "Files"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fs/createDirectory",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FileBrowser.kt / Attachments.kt",
+      "surface": "Files"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fs/getMetadata",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FileBrowser.kt",
+      "surface": "Files"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fs/readDirectory",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FileBrowser.kt",
+      "surface": "Files"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fs/remove",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FileBrowser.kt",
+      "surface": "Files"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fs/copy",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FileBrowser.kt",
+      "surface": "Files"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fs/watch",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FileBrowser.kt",
+      "surface": "Files"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fs/unwatch",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FileBrowser.kt",
+      "surface": "Files"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "skills/config/write",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/install",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "plugin/uninstall",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "turn/start",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConversationScreen.kt",
+      "surface": "Chat"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "turn/settings/update",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ModelOptions.kt",
+      "surface": "Chat > Message options"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "turn/steer",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConversationScreen.kt",
+      "surface": "Chat"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "turn/interrupt",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConversationScreen.kt",
+      "surface": "Chat"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/realtime/start",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "AudioControl.kt",
+      "surface": "Chat > Voice"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/realtime/appendAudio",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "AudioControl.kt",
+      "surface": "Chat > Voice"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/realtime/appendText",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "AudioControl.kt",
+      "surface": "Chat > Voice"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/realtime/appendSpeech",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "AudioControl.kt",
+      "surface": "Chat > Voice"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/realtime/stop",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "AudioControl.kt",
+      "surface": "Chat > Voice"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/timeline/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConversationScreen.kt / TaskControls.kt / ChatDetails.kt",
+      "surface": "Chat; Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "thread/realtime/listVoices",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "AudioControl.kt",
+      "surface": "Chat > Voice"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "review/start",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt",
+      "surface": "Chat > Task actions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "model/list",
+      "verification": "real Codex navigation fixture loaded the Configure sheet; setting mutations pending",
+      "control": "native-screen",
+      "implementation": "ModelOptions.kt / RemoteRepository.kt",
+      "surface": "Chat > Message options"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "modelProvider/capabilities/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ModelOptions.kt",
+      "surface": "Chat > Message options"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "experimentalFeature/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "permissionProfile/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "experimentalFeature/enablement/set",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "remoteControl/enable",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "PairingScreen.kt, ServerSwitcher.kt and SettingsScreen.kt use codex-start pairing and registered-device controls"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "remoteControl/disable",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "PairingScreen.kt, ServerSwitcher.kt and SettingsScreen.kt use codex-start pairing and registered-device controls"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "remoteControl/status/read",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "PairingScreen.kt, ServerSwitcher.kt and SettingsScreen.kt use codex-start pairing and registered-device controls"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "remoteControl/pairing/start",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "PairingScreen.kt, ServerSwitcher.kt and SettingsScreen.kt use codex-start pairing and registered-device controls"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "remoteControl/pairing/status",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "PairingScreen.kt, ServerSwitcher.kt and SettingsScreen.kt use codex-start pairing and registered-device controls"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "remoteControl/client/list",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "PairingScreen.kt, ServerSwitcher.kt and SettingsScreen.kt use codex-start pairing and registered-device controls"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "remoteControl/client/revoke",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "PairingScreen.kt, ServerSwitcher.kt and SettingsScreen.kt use codex-start pairing and registered-device controls"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "collaborationMode/list",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "ModelOptions.kt provides Plan first and normal work modes"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "mock/experimentalMethod",
+      "verification": "documented",
+      "control": "internal-test-only",
+      "implementation": "Upstream protocol test method; excluded from production controls"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "environment/add",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "TasksScreen.kt and ServerSwitcher.kt use registered gateway environments and sessions"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "environment/info",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "TasksScreen.kt and ServerSwitcher.kt show gateway environment and session details"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "environment/status",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "TasksScreen.kt and RemoteRepository.kt show gateway environment connection state"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "mcpServer/oauth/login",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "config/mcpServer/reload",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "mcpServerStatus/list",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "mcpServer/resource/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConnectedTools.kt",
+      "surface": "Connections"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "mcpServer/event/stream/start",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConnectedTools.kt",
+      "surface": "Connections"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "mcpServer/event/stream/stop",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConnectedTools.kt",
+      "surface": "Connections"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "mcpServer/tool/call",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConnectedTools.kt",
+      "surface": "Connections"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "windowsSandbox/setupStart",
+      "verification": "documented",
+      "control": "platform-unavailable",
+      "implementation": "Windows sandbox setup is not available on the supported Linux/macOS gateway"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "windowsSandbox/readiness",
+      "verification": "documented",
+      "control": "platform-unavailable",
+      "implementation": "Windows sandbox setup is not available on the supported Linux/macOS gateway"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "account/login/start",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt / AccountDetails.kt",
+      "surface": "Plugins, Skills, Connections and Account; Settings > Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "account/bedrock/discover",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "AccountDetails.kt",
+      "surface": "Settings > Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "account/bedrock/setup",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "AccountDetails.kt",
+      "surface": "Settings > Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "account/login/cancel",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "account/logout",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "account/rateLimits/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt / RemoteRepository.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "account/rateLimitResetCredit/consume",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "account/usage/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "AccountDetails.kt",
+      "surface": "Settings > Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "account/workspaceMessages/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "AccountDetails.kt",
+      "surface": "Settings > Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "account/sendAddCreditsNudgeEmail",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "feedback/upload",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "command/exec",
+      "verification": "passed on USB Pixel 5a: host and Docker PTYs, Vim, Unicode, multiple windows, screen re-entry",
+      "control": "native-screen",
+      "implementation": "TerminalScreen.kt, TerminalWorkspace.kt, remote/terminals.rs, LegacyTerminalScreen.kt",
+      "surface": "Terminals / Files > Terminal"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "command/exec/write",
+      "verification": "passed on USB Pixel 5a: native IME, Ctrl-C, host and Docker PTY input",
+      "control": "native-screen",
+      "implementation": "TerminalWorkspace.kt, remote/terminals.rs, LegacyTerminalScreen.kt",
+      "surface": "Terminals / Files > Terminal"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "command/exec/terminate",
+      "verification": "passed on USB Pixel 5a: close confirmation and isolated host/container cleanup",
+      "control": "native-screen",
+      "implementation": "TerminalWorkspace.kt, remote/terminals.rs, LegacyTerminalScreen.kt",
+      "surface": "Terminals / Files > Terminal"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "command/exec/resize",
+      "verification": "passed on USB Pixel 5a: PTY dimensions, full screen, and visible keyboard resizing",
+      "control": "native-screen",
+      "implementation": "TerminalScreen.kt, remote/terminals.rs, LegacyTerminalScreen.kt",
+      "surface": "Terminals / Files > Terminal"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "process/spawn",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "TerminalWorkspace.kt and remote/terminals.rs use command/exec with a PTY"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "process/writeStdin",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "TerminalWorkspace.kt and remote/terminals.rs use command/exec/write"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "process/kill",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "TerminalWorkspace.kt and remote/terminals.rs use command/exec/terminate"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "process/resizePty",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "TerminalScreen.kt and remote/terminals.rs use command/exec/resize"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "config/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ModelOptions.kt / HostPreferences.kt",
+      "surface": "Chat > Message options; Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "externalAgentConfig/detect",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "externalAgentConfig/import",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "externalAgentConfig/import/recordHistory",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "host-owned",
+      "implementation": "Host records the import; HostPreferences.kt shows import history"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "externalAgentConfig/import/readHistories",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "config/value/write",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt / ConnectedTools.kt",
+      "surface": "Settings; Connections"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "config/batchWrite",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "HostPreferences.kt and ConnectedTools.kt save individual settings with config/value/write"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "configRequirements/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt",
+      "surface": "Settings"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "account/read",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt / RemoteRepository.kt",
+      "surface": "Plugins, Skills, Connections and Account"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fuzzyFileSearch",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FileBrowser.kt",
+      "surface": "Files"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fuzzyFileSearch/sessionStart",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "FileBrowser.kt debounces cached fuzzyFileSearch calls"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fuzzyFileSearch/sessionUpdate",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "FileBrowser.kt debounces cached fuzzyFileSearch calls"
+    },
+    {
+      "kind": "ClientRequest",
+      "method": "fuzzyFileSearch/sessionStop",
+      "verification": "documented; native equivalent or host acceptance pending",
+      "control": "native-equivalent",
+      "implementation": "FileBrowser.kt cancels the search when the sheet closes"
+    },
+    {
+      "kind": "ServerRequest",
+      "method": "item/commandExecution/requestApproval",
+      "verification": "shared-backend-replay-and-race-test; Android live host test pending",
+      "control": "approval-card",
+      "implementation": "Approvals.kt"
+    },
+    {
+      "kind": "ServerRequest",
+      "method": "item/fileChange/requestApproval",
+      "verification": "shared-backend-replay-and-race-test; Android live host test pending",
+      "control": "approval-card",
+      "implementation": "Approvals.kt"
+    },
+    {
+      "kind": "ServerRequest",
+      "method": "item/tool/requestUserInput",
+      "verification": "pending-host-test",
+      "control": "approval-card",
+      "implementation": "Approvals.kt"
+    },
+    {
+      "kind": "ServerRequest",
+      "method": "mcpServer/elicitation/request",
+      "verification": "pending-host-test",
+      "control": "approval-card",
+      "implementation": "Approvals.kt"
+    },
+    {
+      "kind": "ServerRequest",
+      "method": "item/permissions/requestApproval",
+      "verification": "pending-host-test",
+      "control": "approval-card",
+      "implementation": "Approvals.kt"
+    },
+    {
+      "kind": "ServerRequest",
+      "method": "item/tool/call",
+      "verification": "pending-host-test",
+      "control": "approval-card",
+      "implementation": "Approvals.kt"
+    },
+    {
+      "kind": "ServerRequest",
+      "method": "account/chatgptAuthTokens/refresh",
+      "verification": "pending-host-test",
+      "control": "host-component-required",
+      "implementation": "Host client owns device attestation and provider credentials; Android shows host action required"
+    },
+    {
+      "kind": "ServerRequest",
+      "method": "attestation/generate",
+      "verification": "pending-host-test",
+      "control": "host-component-required",
+      "implementation": "Host client owns device attestation and provider credentials; Android shows host action required"
+    },
+    {
+      "kind": "ServerRequest",
+      "method": "currentTime/read",
+      "verification": "shared-backend-protocol-fixture; live host test pending",
+      "control": "automatic",
+      "implementation": "crates/codex-start-host/src/remote/sessions.rs"
+    },
+    {
+      "kind": "ServerRequest",
+      "method": "applyPatchApproval",
+      "verification": "pending-host-test",
+      "control": "approval-card",
+      "implementation": "Approvals.kt"
+    },
+    {
+      "kind": "ServerRequest",
+      "method": "execCommandApproval",
+      "verification": "pending-host-test",
+      "control": "approval-card",
+      "implementation": "Approvals.kt"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "error",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/started",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/status/changed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/archived",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/deleted",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/unarchived",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/closed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/reverted",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "skills/changed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/name/updated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/goal/updated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/goal/cleared",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/queue/changed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "project/changed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/project/updated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/environment/connected",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/environment/disconnected",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/settings/updated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/tokenUsage/updated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "turn/started",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "hook/started",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "turn/completed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "hook/completed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "turn/diff/updated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "turn/plan/updated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/started",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/autoApprovalReview/started",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/autoApprovalReview/completed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "autoApprovalReview/strictReviewRequired",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/completed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/agentMessage/delta",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/plan/delta",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "command/exec/outputDelta",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "process/outputDelta",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "process/exited",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/commandExecution/outputDelta",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/commandExecution/terminalInteraction",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/fileChange/outputDelta",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/fileChange/patchUpdated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "serverRequest/resolved",
+      "verification": "shared-backend-replay-and-race-test; Android live host test pending",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/mcpToolCall/progress",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "mcpServer/oauthLogin/completed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "mcpServer/startupStatus/updated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "mcpServer/event/stream/notification",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "account/updated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "account/rateLimits/updated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "app/list/updated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "remoteControl/status/changed",
+      "verification": "gateway-and-overlay-tests",
+      "control": "replaced",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "externalAgentConfig/import/progress",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "externalAgentConfig/import/completed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "fs/changed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/reasoning/summaryTextDelta",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/reasoning/summaryPartAdded",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "item/reasoning/textDelta",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/compacted",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "model/rerouted",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "model/verification",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "modelProvider/authRecoveryStarted",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "modelProvider/authRecoveryCompleted",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "turn/moderationMetadata",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "model/safetyBuffering/updated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "warning",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "guardianWarning",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "deprecationNotice",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "configWarning",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "fuzzyFileSearch/sessionUpdated",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "fuzzyFileSearch/sessionCompleted",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/realtime/started",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/realtime/itemAdded",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/realtime/item/started",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/realtime/item/transcript/delta",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/realtime/item/completed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/realtime/transcript/delta",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/realtime/transcript/done",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/realtime/outputAudio/delta",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/realtime/sdp",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/realtime/error",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "thread/realtime/closed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "windows/worldWritableWarning",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "windowsSandbox/setupCompleted",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ServerNotification",
+      "method": "account/login/completed",
+      "verification": "pending-host-test",
+      "control": "event-subscription",
+      "implementation": "RemoteRepository.kt event stream, RemoteData.kt cache invalidation and relevant native screen; event-specific acceptance pending"
+    },
+    {
+      "kind": "ClientNotification",
+      "method": "initialized",
+      "verification": "shared-backend-protocol-fixture; live host test pending",
+      "control": "automatic",
+      "implementation": "crates/codex-start-host/src/remote/sessions.rs"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/model",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ModelOptions.kt: Chat > Message options"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/ide",
+      "verification": "documented",
+      "control": "platform-specific",
+      "implementation": "Use host IDE context or Android attachments; mobile IDE selection is unavailable"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/permissions",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt: Settings > Permissions"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/keymap",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "platform-specific",
+      "implementation": "KeyboardShortcuts.kt: Keyboard shortcuts and Android system input settings"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/vim",
+      "verification": "documented",
+      "control": "platform-specific",
+      "implementation": "Terminal display/input preference; Android uses system keyboard, accessibility and navigation"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/setup-default-sandbox",
+      "verification": "documented",
+      "control": "platform-unavailable",
+      "implementation": "Windows-only elevated sandbox setup; daemon supports Linux and macOS"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/sandbox-add-read-dir",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt: Host configuration > sandbox workspace write settings; per-chat extra roots require host support"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/experimental",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt: Settings > Features"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/approve",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "host-component-required",
+      "implementation": "Host guardian assessment requires the host component; ordinary approvals use Approvals.kt"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/memories",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt: Settings > Memory"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/skills",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt and SkillDetails.kt: Skills"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/import",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt: Settings > Import settings"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/hooks",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt: Skills > Hooks"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/review",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt: Chat > Review code"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/rename",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt: Chat > Rename chat"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/new",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "New task"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/archive",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt: Chat > Archive chat"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/delete",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt: Chat > Delete chat"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/resume",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Task list"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/fork",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt: Chat > Fork chat"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/worktree",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "New session: Worktree option; existing worktree switching pending"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/app",
+      "verification": "documented",
+      "control": "platform-specific",
+      "implementation": "Android app itself replaces Desktop installation"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/init",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Conversation menu: Prepare repository instructions, then Send"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/compact",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt: Chat > Compact context"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/recap",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Conversation menu: Prepare a conversation recap, then Send"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/plan",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ModelOptions.kt: Message options > Plan first"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/goal",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "TaskControls.kt: Chat > Goal"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/agents",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Conversation menu: Agents and subagents; switch to a real loaded task"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/side",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Conversation menu: Start a side conversation; ephemeral thread/fork"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/btw",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Conversation menu: Start a side conversation; ephemeral thread/fork"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/copy",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Conversation: Copy"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/export",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Conversation: Export Markdown"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/raw",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Conversation menu: Export protocol history as paginated JSONL"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/diff",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Changes: working tree, staged, branch and active turn"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/mention",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Composer: Attach"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/status",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConversationScreen.kt task status; ModelOptions.kt model settings; TasksScreen.kt sessions"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/cd",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "Select a project or create a session in ProjectScreens.kt and TasksScreen.kt"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/pwd",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Session working directory"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/usage",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt and AccountDetails.kt: Settings > Account"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/debug-config",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt: Settings > Host configuration and Permissions > Managed settings"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/title",
+      "verification": "documented",
+      "control": "platform-specific",
+      "implementation": "Terminal display/input preference; Android uses system keyboard, accessibility and navigation"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/statusline",
+      "verification": "documented",
+      "control": "platform-specific",
+      "implementation": "Terminal display/input preference; Android uses system keyboard, accessibility and navigation"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/theme",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "SettingsScreen.kt: Settings > Appearance"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/pets",
+      "verification": "documented",
+      "control": "platform-specific",
+      "implementation": "Terminal display/input preference; Android uses system keyboard, accessibility and navigation"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/mcp",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt and ConnectedTools.kt: Connections > Tools"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/apps",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ConnectedTools.kt: Connections > Apps"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/plugins",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt: Plugins"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/logout",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "FeatureScreens.kt: Settings > Account > Sign out"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/quit",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Android Back; ongoing monitoring has a separate Stop action"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/exit",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Android Back; ongoing monitoring has a separate Stop action"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/feedback",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt: Settings > Diagnostics > Report a problem"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/rollout",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Conversation menu: Copy host transcript path"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/ps",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ChatDetails.kt: Chat > Background terminals"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/stop",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "ChatDetails.kt: Chat > Background terminals > Stop all"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/clear",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "New task"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/personality",
+      "verification": "native control compiles; live host acceptance pending",
+      "control": "native-screen",
+      "implementation": "HostPreferences.kt: Settings > Personalization"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/test-approval",
+      "verification": "documented",
+      "control": "internal-test-only",
+      "implementation": "Upstream test/debug command; excluded from production controls"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/subagents",
+      "verification": "pending-host-test",
+      "control": "android-action",
+      "implementation": "Conversation menu: Agents and subagents; descendant task list"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/debug-m-drop",
+      "verification": "documented",
+      "control": "internal-test-only",
+      "implementation": "Upstream test/debug command; excluded from production controls"
+    },
+    {
+      "kind": "TuiCommand",
+      "method": "/debug-m-update",
+      "verification": "documented",
+      "control": "internal-test-only",
+      "implementation": "Upstream test/debug command; excluded from production controls"
+    },
+    {
+      "kind": "DeprecatedRequest",
+      "method": "getAuthStatus",
+      "control": "replacement",
+      "implementation": "account/read",
+      "verification": "pending-host-test"
+    },
+    {
+      "kind": "DeprecatedRequest",
+      "method": "getConversationSummary",
+      "control": "replacement",
+      "implementation": "thread/read",
+      "verification": "pending-host-test"
+    },
+    {
+      "kind": "DeprecatedRequest",
+      "method": "gitDiffToRemote",
+      "control": "replacement",
+      "implementation": "Changes: branch comparison",
+      "verification": "pending-host-test"
+    }
+  ]
+}

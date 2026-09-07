@@ -116,8 +116,8 @@ impl ProjectIdentity {
     #[must_use]
     pub fn ownership_labels(&self) -> std::collections::BTreeMap<String, String> {
         std::collections::BTreeMap::from([
-            ("io.codex-start.managed".into(), "true".into()),
-            ("io.codex-start.project".into(), self.id.clone()),
+            ("cs.fob.wtf.managed".into(), "true".into()),
+            ("cs.fob.wtf.project".into(), self.id.clone()),
         ])
     }
 }

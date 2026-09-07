@@ -9,6 +9,8 @@ use crate::{
     error::{HostError, Result},
 };
 
+pub(crate) const ATTACHMENT_RUNTIME_INFO_ENV: &str = "CODEX_START_ADAPTER_ATTACHMENT_RUNTIME_INFO";
+
 /// Select a foreground run. The client owns the server process and worktree.
 pub fn run_args(args: AdapterArgs) -> RunArgs {
     let options = args.options;

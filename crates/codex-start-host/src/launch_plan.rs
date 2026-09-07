@@ -1087,7 +1087,7 @@ mod tests {
                 ("HOME".to_owned(), OsString::from("/home/codex")),
                 ("NON_UTF8".to_owned(), OsString::from_vec(vec![b'x', 0xFF])),
             ]),
-            labels: BTreeMap::from([("io.codex-start.managed".to_owned(), "true".to_owned())]),
+            labels: BTreeMap::from([("cs.fob.wtf.managed".to_owned(), "true".to_owned())]),
             mounts: vec![MountRequest {
                 kind: MountKind::Bind,
                 source: Some(OsString::from("/host/workspace")),

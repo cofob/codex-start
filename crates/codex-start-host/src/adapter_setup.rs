@@ -14,7 +14,7 @@ use std::{
     process::Command,
 };
 
-const LABEL: &str = "io.codex-start.adapter";
+const LABEL: &str = "cs.fob.wtf.adapter";
 const VARIABLE: &str = "CODEX_CLI_PATH";
 
 #[derive(Clone, Debug, Args)]

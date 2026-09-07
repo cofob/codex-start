@@ -26,6 +26,7 @@ jobs:
           components: clippy,rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
+      - run: python3 scripts/check-protocol-coverage.py
       - run: cargo test --locked --workspace --all-features
       - run: cargo test --locked --workspace --all-features --doc
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings -W clippy::pedantic
@@ -386,7 +387,7 @@ jobs:
           test "$(stat --format %u /workspace/project/created-by-launcher)" = "${TEST_UID}"
           test "$(stat --format %g /workspace/project/created-by-launcher)" = "${TEST_GID}"
           test -z "$(as_nested podman ps --all --quiet \
-            --filter label=io.codex-start.managed=true)"
+            --filter label=cs.fob.wtf.managed=true)"
           NESTED
           chmod 0755 "${root}" "${root}/project"
           chmod 0755 "${root}/nested-launch.sh"
@@ -668,8 +669,8 @@ jobs:
           container=""
           for _ in $(seq 1 60); do
             container="$(docker ps --quiet \
-              --filter label=io.codex-start.managed=true \
-              --filter label=io.codex-start.role=workload | sed -n '1p')"
+              --filter label=cs.fob.wtf.managed=true \
+              --filter label=cs.fob.wtf.role=workload | sed -n '1p')"
             [[ -z "${container}" ]] || break
             sleep 0.5
           done
@@ -681,7 +682,7 @@ jobs:
           curl --fail --silent http://127.0.0.1:18080/ >/dev/null
           kill -TERM "${launcher_pid}"
           wait "${launcher_pid}"
-          test -z "$(docker ps --all --quiet --filter label=io.codex-start.managed=true)"
+          test -z "$(docker ps --all --quiet --filter label=cs.fob.wtf.managed=true)"
       - name: Verify owned-resource cleanup
         shell: bash
         run: |
@@ -700,17 +701,17 @@ jobs:
           trap cleanup EXIT
 
           mapfile -t leaked_containers < <(docker ps --all --quiet \
-            --filter label=io.codex-start.managed=true)
+            --filter label=cs.fob.wtf.managed=true)
           mapfile -t leaked_networks < <(docker network ls --quiet \
-            --filter label=io.codex-start.managed=true)
+            --filter label=cs.fob.wtf.managed=true)
           mapfile -t leaked_volumes < <(docker volume ls --quiet \
-            --filter label=io.codex-start.ephemeral=true \
-            --filter label=io.codex-start.managed=true)
+            --filter label=cs.fob.wtf.ephemeral=true \
+            --filter label=cs.fob.wtf.managed=true)
           if (( ${#leaked_containers[@]} || ${#leaked_networks[@]} || ${#leaked_volumes[@]} )); then
             echo 'a foreground launch leaked managed runtime resources' >&2
-            docker ps --all --filter label=io.codex-start.managed=true
-            docker network ls --filter label=io.codex-start.managed=true
-            docker volume ls --filter label=io.codex-start.ephemeral=true
+            docker ps --all --filter label=cs.fob.wtf.managed=true
+            docker network ls --filter label=cs.fob.wtf.managed=true
+            docker volume ls --filter label=cs.fob.wtf.ephemeral=true
             exit 1
           fi
 
@@ -718,22 +719,22 @@ jobs:
             --filter reference='codex-start-env-generic:*')
           test "${#generic_images[@]}" -gt 0
           docker create --name codex-start-ci-stale \
-            --label io.codex-start.managed=true "${generic_images[0]}" true >/dev/null
+            --label cs.fob.wtf.managed=true "${generic_images[0]}" true >/dev/null
           docker network create --internal \
-            --label io.codex-start.managed=true codex-start-ci-stale-network >/dev/null
+            --label cs.fob.wtf.managed=true codex-start-ci-stale-network >/dev/null
           docker volume create \
-            --label io.codex-start.managed=true \
-            --label io.codex-start.ephemeral=true codex-start-ci-stale-volume >/dev/null
+            --label cs.fob.wtf.managed=true \
+            --label cs.fob.wtf.ephemeral=true codex-start-ci-stale-volume >/dev/null
           docker volume create \
-            --label io.codex-start.ephemeral=true codex-start-ci-unowned-volume >/dev/null
+            --label cs.fob.wtf.ephemeral=true codex-start-ci-unowned-volume >/dev/null
 
           "${launcher}" --config "${config}" resources --runtime docker cleanup --force
 
-          test -z "$(docker ps --all --quiet --filter label=io.codex-start.managed=true)"
-          test -z "$(docker network ls --quiet --filter label=io.codex-start.managed=true)"
+          test -z "$(docker ps --all --quiet --filter label=cs.fob.wtf.managed=true)"
+          test -z "$(docker network ls --quiet --filter label=cs.fob.wtf.managed=true)"
           test -z "$(docker volume ls --quiet \
-            --filter label=io.codex-start.ephemeral=true \
-            --filter label=io.codex-start.managed=true)"
+            --filter label=cs.fob.wtf.ephemeral=true \
+            --filter label=cs.fob.wtf.managed=true)"
           docker volume inspect codex-start-ci-unowned-volume >/dev/null
       - name: Clean up after launcher tests
         if: always()
@@ -747,18 +748,18 @@ jobs:
           fi
 
           mapfile -t containers < <(docker ps --all --quiet \
-            --filter label=io.codex-start.managed=true)
+            --filter label=cs.fob.wtf.managed=true)
           if (( ${#containers[@]} )); then
             docker rm --force "${containers[@]}"
           fi
           mapfile -t networks < <(docker network ls --quiet \
-            --filter label=io.codex-start.managed=true)
+            --filter label=cs.fob.wtf.managed=true)
           if (( ${#networks[@]} )); then
             docker network rm "${networks[@]}"
           fi
           mapfile -t volumes < <(docker volume ls --quiet \
-            --filter label=io.codex-start.ephemeral=true \
-            --filter label=io.codex-start.managed=true)
+            --filter label=cs.fob.wtf.ephemeral=true \
+            --filter label=cs.fob.wtf.managed=true)
           if (( ${#volumes[@]} )); then
             docker volume rm --force "${volumes[@]}"
           fi

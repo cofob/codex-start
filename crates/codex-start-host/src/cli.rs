@@ -45,6 +45,16 @@ pub struct Cli {
 /// Top-level operations.
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
+    /// Manage the remote Android gateway.
+    Daemon(crate::remote::DaemonArgs),
+    /// Display a device invitation, starting the gateway if necessary.
+    Connect(crate::remote::ConnectArgs),
+    /// Approve a pending remote device code.
+    Approve { code: String },
+    /// List or revoke registered remote devices.
+    Device(crate::remote::DeviceArgs),
+    /// Replace the device invitation password without revoking devices.
+    ConnectionPassword(crate::remote::PasswordArgs),
     /// Serve Desktop or IDE clients through project containers.
     Adapter(AdapterArgs),
     #[command(name = "__adapter-setup", hide = true)]
@@ -136,6 +146,9 @@ pub enum OutputFormat {
 #[derive(Clone, Debug, Default, Args)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct RunOptions {
+    /// Select a named codex-start profile for this session.
+    #[arg(long)]
+    pub profile: Option<String>,
     /// Name the linked worktree and owned container.
     #[arg(short = 'n', long)]
     pub name: Option<String>,
@@ -329,7 +342,7 @@ pub struct WorktreeArgs {
 /// Worktree lifecycle operations.
 #[derive(Clone, Debug, Subcommand)]
 pub enum WorktreeCommand {
-    /// List managed worktrees for the current project.
+    /// List linked worktrees for the current project.
     List,
     /// Run interactive Git commit in a selected worktree.
     Commit(WorktreeSelection),
@@ -350,7 +363,7 @@ pub enum WorktreeCommand {
 /// Select a named worktree or the most recently modified one.
 #[derive(Clone, Debug, Args)]
 pub struct WorktreeSelection {
-    /// Worktree name.
+    /// Worktree name from `worktree list`.
     #[arg(short, long)]
     pub name: Option<String>,
 }
@@ -448,6 +461,15 @@ pub enum HomeCommand {
         #[arg(long)]
         agents_from: Option<PathBuf>,
     },
+    /// Add missing chats and projects from another Codex home.
+    Backfill {
+        /// Target home name.
+        #[arg(default_value = "default")]
+        name: String,
+        /// Source Codex home. Defaults to the host `~/.codex` directory.
+        #[arg(long)]
+        from: Option<PathBuf>,
+    },
     /// Export a quiescent Codex directory.
     Export {
         name: String,
@@ -477,7 +499,7 @@ pub struct SessionArgs {
 #[derive(Clone, Debug, Subcommand)]
 pub enum SessionCommand {
     /// Start a managed session using the normal run options.
-    Start(RunArgs),
+    Start(Box<RunArgs>),
     /// List sessions for the current project.
     List {
         /// Include sessions belonging to other projects.
@@ -800,6 +822,24 @@ mod tests {
                     if codex_args.as_slice()
                         == [OsString::from("login"), OsString::from("--device-auth")])
         ));
+    }
+
+    #[test]
+    fn session_start_forwards_the_selected_profile() {
+        let cli = Cli::try_parse_from(["codex-start", "session", "start", "--profile", "review"])
+            .expect("profile selection");
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session")
+        };
+        let Some(SessionCommand::Start(run)) = args.command else {
+            panic!("expected start")
+        };
+        assert_eq!(
+            crate::configuration::patch_from_run_options(None, &run.options)
+                .profile
+                .as_deref(),
+            Some("review")
+        );
     }
 
     #[test]

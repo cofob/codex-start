@@ -31,8 +31,8 @@ const AUTH_CONTAINER_FILE: &str = "/run/codex-start/secrets/egress/token";
 const AUTH_CONTAINER_MAP: &str = "/run/codex-start/secrets/egress/map.json";
 const SIDECAR_SPEC_FILE: &str = "/run/codex-start/secrets/egress/sidecar-spec.json";
 const SIDECAR_TOKEN_ENV: &str = "CODEX_START_EGRESS_TOKEN";
-const MANAGED_LABEL: &str = "io.codex-start.managed";
-const PROJECT_LABEL: &str = "io.codex-start.project";
+const MANAGED_LABEL: &str = "cs.fob.wtf.managed";
+const PROJECT_LABEL: &str = "cs.fob.wtf.project";
 
 /// Runtime resources constraining workload egress.
 #[derive(Debug)]
@@ -414,7 +414,7 @@ fn sidecar_request(
     image: String,
 ) -> Result<RunRequest> {
     let mut labels = options.labels.clone();
-    labels.insert("io.codex-start.role".to_owned(), "egress".to_owned());
+    labels.insert("cs.fob.wtf.role".to_owned(), "egress".to_owned());
     let authentication = options
         .authentication
         .expect("allowlist authentication was validated before sidecar planning");

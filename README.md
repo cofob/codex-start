@@ -85,6 +85,8 @@ codex-start session recovery enable
 
 Run bare `codex-start session` or `codex-start worktree` in a terminal to open the corresponding full-screen manager. The managers provide filtering, details, refresh, and context-sensitive lifecycle actions; force removal and force cleanup remain explicit CLI-only operations. The `session list` and `worktree list` subcommands remain suitable for scripts and support `--output json`.
 
+`worktree list` also shows linked worktrees that another client registered for the same repository. This includes detached worktrees that the ChatGPT desktop app creates while it uses `codex-start-adapter`. You can select these external worktrees by the displayed name for `commit`, `squash`, `move`, and `edit`. `worktree cleanup` does not remove external worktrees because their client owns their lifecycle and snapshots.
+
 `run` uses a foreground container by default. When the workload exits, the container, sidecar, run networks, and temporary cache volumes are removed. Newly created worktrees with no changes or new commits are also removed with their owned branches. Worktrees with changes, Codex homes, and persistent caches remain. Set `settings.git.cleanup_untouched = false` to keep all worktrees. Use `--persistent` or `settings.sessions.enabled = true` to keep a managed session. In that mode, a bare interactive run keeps a Codex app-server in the workload and reconnects TUI clients to it; an explicit command after `--` runs as a managed background job. Closing the client terminal does not stop a persistent session. Use `--ephemeral` to override persistent settings for one run.
 
 Persistent sessions force the authenticated SSH-agent relay so `session attach` and `session refresh` can retarget new connections to the caller's current `SSH_AUTH_SOCK`. The container-side socket remains stable. Normal TUI exit prompts to detach or stop; terminal loss detaches implicitly.
@@ -181,6 +183,7 @@ Static native Codex HTTP-header tables are intentionally rejected; configure `en
 ```console
 codex-start home create team
 codex-start home import team --from ~/.codex
+codex-start home backfill default
 codex-start home exec team -- login
 codex-start run --home team
 ```

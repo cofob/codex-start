@@ -294,6 +294,9 @@ fn installed_adapter_routes_multiple_projects_and_restored_threads_from_rpc() {
     let engine = fixture.root.join("mock-docker");
     fs::write(&engine, include_bytes!("fixtures/adapter_engine.py")).unwrap();
     fs::set_permissions(&engine, fs::Permissions::from_mode(0o700)).unwrap();
+    let host_codex = fixture.root.join("host-codex");
+    fs::copy(&engine, &host_codex).unwrap();
+    fs::set_permissions(&host_codex, fs::Permissions::from_mode(0o700)).unwrap();
     let adapter = env!("CARGO_BIN_EXE_codex-start-adapter");
     // Install the mock engine on PATH. All adapter settings come from normal config.
     fs::rename(&engine, fixture.root.join("docker")).unwrap();
@@ -337,6 +340,31 @@ fn installed_adapter_routes_multiple_projects_and_restored_threads_from_rpc() {
             .filter_map(|(key, value)| value.map(|value| (key, value))),
     );
     let diagnostics = fixture.root.join("diagnostics");
+    let copy_log = fixture.root.join("attachment-copies");
+    let container_fs = fixture.root.join("container-fs");
+    let activity = fixture.root.join("container-activity");
+    let restored_file = fixture.root.join("historical attachments/archive.bin");
+    let restored_folder = fixture.root.join("historical attachments/folder");
+    fs::create_dir_all(&restored_folder).unwrap();
+    fs::write(&restored_file, [0, 1, 254, 255]).unwrap();
+    fs::write(restored_folder.join("nested.txt"), "restored folder").unwrap();
+    let sessions = fixture
+        .root
+        .join("data/codex-start/homes/default/.codex/sessions/2026/09/07");
+    fs::create_dir_all(&sessions).unwrap();
+    let restored_text = format!(
+        "\n# Files pasted by the user:\n\n## archive.bin: {}\n\n## folder: {}/\n\n## My request:\nUse them.\n",
+        restored_file.display(),
+        restored_folder.display()
+    );
+    fs::write(
+        sessions.join("rollout-2026-09-07T00-00-00-saved-thread.jsonl"),
+        format!(
+            "{}\n",
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":restored_text}]}})
+        ),
+    )
+    .unwrap();
     let mut child = command
         .current_dir("/")
         .args([
@@ -347,6 +375,14 @@ fn installed_adapter_routes_multiple_projects_and_restored_threads_from_rpc() {
         ])
         .env("MOCK_SAVED_CWD", &second)
         .env("MOCK_BACKENDS", fixture.root.join("backends"))
+        .env("MOCK_COPIES", &copy_log)
+        .env("MOCK_CONTAINER_FS", &container_fs)
+        .env(
+            "MOCK_RESUME_ATTACHMENTS",
+            serde_json::to_string(&[&restored_file, &restored_folder]).unwrap(),
+        )
+        .env("MOCK_ACTIVITY", &activity)
+        .env("CODEX_START_ADAPTER_HOST_CODEX", &host_codex)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(fs::File::create(&diagnostics).unwrap())
@@ -377,7 +413,20 @@ fn installed_adapter_routes_multiple_projects_and_restored_threads_from_rpc() {
         &mut input,
         json!({"id":0,"method":"initialize","params":{"clientInfo":{"name":"fixture","version":"1"}}}),
     );
+    // VS Code providers can send requests before the initialize response. The
+    // adapter must queue local and backend requests until the handshake is
+    // complete.
+    send(
+        &mut input,
+        json!({"id":23,"method":"fs/createDirectory","params":{"path":fixture.root.join("pre-init")}}),
+    );
+    send(
+        &mut input,
+        json!({"id":24,"method":"skills/list","params":{}}),
+    );
     assert_eq!(receive()["id"], 0);
+    assert_eq!(receive()["id"], 23);
+    assert_eq!(receive()["id"], 24);
     send(&mut input, json!({"method":"initialized"}));
     let backend_count = |event: &str| {
         fs::read_to_string(fixture.root.join("backends"))
@@ -405,7 +454,94 @@ fn installed_adapter_routes_multiple_projects_and_restored_threads_from_rpc() {
         );
         assert_eq!(receive()["result"]["dataBase64"], "aGVsbG8=");
     }
+    assert_eq!(backend_count("start"), 0);
+
+    send(
+        &mut input,
+        json!({"id":7,"method":"skills/list","params":{"cwds":[alias,second]}}),
+    );
+    let skills = receive();
+    assert_eq!(skills["id"], 7);
+    assert_eq!(skills["result"]["data"].as_array().unwrap().len(), 2);
+    for item in skills["result"]["data"].as_array().unwrap() {
+        assert_eq!(
+            item["skills"][0]["path"],
+            "/home/codex/.codex/skills/fixture/SKILL.md"
+        );
+    }
+    assert_eq!(backend_count("start"), 0);
+    assert_eq!(backend_count("host-start"), 1);
+    let native_start = fs::read_to_string(fixture.root.join("backends"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|event| event["event"] == "host-start")
+        .unwrap();
+    assert_eq!(
+        Path::new(native_start["codex_home"].as_str().unwrap()),
+        fixture.root.join("data/codex-start/homes/default/.codex")
+    );
+    let native_sqlite_home = native_start["sqlite_home"].as_str().unwrap();
+    assert!(native_sqlite_home.contains("control/native-sqlite-home"));
+    assert_ne!(
+        Path::new(native_sqlite_home),
+        fixture.root.join("data/codex-start/homes/default/.codex")
+    );
+
+    // Desktop materializes bundled marketplaces on the host. The native
+    // catalog backend must read that host path without starting a container.
+    send(
+        &mut input,
+        json!({"id":23,"method":"marketplace/add","params":{"source":fixture.root.join("marketplace")}}),
+    );
+    assert_eq!(receive()["id"], 23);
+    assert_eq!(backend_count("start"), 0);
+    assert_eq!(backend_count("host-start"), 1);
+
+    // Loading saved thread state must use one shared control container.
+    send(
+        &mut input,
+        json!({"id":4,"method":"thread/resume","params":{"threadId":"saved-thread"}}),
+    );
+    assert_eq!(
+        receive()["result"]["thread"]["cwd"],
+        second.to_str().unwrap()
+    );
+    send(
+        &mut input,
+        json!({"id":11,"method":"thread/turns/list","params":{"threadId":"saved-thread"}}),
+    );
+    assert!(receive().get("result").is_some());
+    send(
+        &mut input,
+        json!({"id":12,"method":"config/read","params":{"cwd":alias}}),
+    );
+    assert!(receive().get("result").is_some());
+    send(
+        &mut input,
+        json!({"id":13,"method":"hooks/list","params":{"cwds":[alias,second]}}),
+    );
+    assert!(receive().get("result").is_some());
     assert_eq!(backend_count("start"), 1);
+
+    // A resumed control thread holds the writer lock. Starting project work
+    // must stop the control server before the project server resumes it.
+    send(
+        &mut input,
+        json!({"id":25,"method":"turn/start","params":{"threadId":"saved-thread","input":[]}}),
+    );
+    assert_eq!(receive()["result"]["cwd"], second.to_str().unwrap());
+    let copied_path = |path: &Path| container_fs.join(path.strip_prefix(Path::new("/")).unwrap());
+    assert_eq!(
+        fs::read(copied_path(&restored_file)).unwrap(),
+        [0, 1, 254, 255]
+    );
+    assert_eq!(
+        fs::read_to_string(copied_path(&restored_folder.join("nested.txt"))).unwrap(),
+        "restored folder"
+    );
+    assert_eq!(backend_count("start"), 2);
+    assert_eq!(backend_count("stop"), 1);
 
     send(
         &mut input,
@@ -431,30 +567,108 @@ fn installed_adapter_routes_multiple_projects_and_restored_threads_from_rpc() {
         second.to_str().unwrap()
     );
     let first_thread = starts[0]["result"]["thread"]["id"].clone();
-    let second_thread = starts[1]["result"]["thread"]["id"].clone();
+    // New threads must start in their project servers. A new thread has no
+    // rollout file that a second server can resume before the first turn.
+    assert_eq!(backend_count("start"), 3);
     send(
         &mut input,
-        json!({"id":3,"method":"turn/start","params":{"threadId":first_thread,"input":"literal $(value)"}}),
+        json!({"id":14,"method":"config/read","params":{"cwd":alias}}),
     );
     assert_eq!(
         receive()["result"]["cwd"],
         fixture.project.to_str().unwrap()
     );
+    let control_deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while backend_count("stop") == 0 && std::time::Instant::now() < control_deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(backend_count("stop"), 1);
+    let attachment_dir = fixture.root.join("attachments");
     send(
         &mut input,
-        json!({"id":4,"method":"thread/resume","params":{"threadId":"saved-thread"}}),
+        json!({"id":23,"method":"fs/writeFile","params":{"path":attachment_dir.join("notes.txt"),"dataBase64":"dGV4dCBhdHRhY2htZW50Cg=="}}),
+    );
+    assert_eq!(receive()["result"], json!({}));
+    send(
+        &mut input,
+        json!({"id":24,"method":"fs/writeFile","params":{"path":attachment_dir.join("archive.bin"),"dataBase64":"AAH+/wo="}}),
+    );
+    assert_eq!(receive()["result"], json!({}));
+    let attachment_folder = attachment_dir.join("folder");
+    fs::create_dir(&attachment_folder).unwrap();
+    fs::write(attachment_folder.join("nested.txt"), b"nested attachment").unwrap();
+    let project_file = fixture.project.join("visible.txt");
+    fs::write(&project_file, b"already mounted").unwrap();
+    let attachment_text = format!(
+        "\n# Files pasted by the user:\n\n## archive.bin: {}\n\n## folder: {}/\n\n## My request:\nliteral $(value)\n",
+        attachment_dir.join("archive.bin").display(),
+        attachment_folder.display(),
+    );
+    send(
+        &mut input,
+        json!({"id":3,"method":"turn/start","params":{"threadId":first_thread,"input":[
+            {"type":"text","text":attachment_text},
+            {"type":"localImage","path":attachment_dir.join("image")},
+            {"type":"localAudio","path":attachment_dir.join("notes.txt")},
+            {"type":"mention","name":"notes.txt","path":attachment_dir.join("notes.txt")},
+            {"type":"skill","name":"folder","path":attachment_folder},
+            {"type":"mention","name":"visible.txt","path":project_file}
+        ]}}),
+    );
+    let turn = receive();
+    assert_eq!(turn["result"]["cwd"], fixture.project.to_str().unwrap());
+    let forwarded = turn["result"]["params"]["input"].as_array().unwrap();
+    for (item, path) in [
+        (&forwarded[1], attachment_dir.join("image")),
+        (&forwarded[2], attachment_dir.join("notes.txt")),
+        (&forwarded[3], attachment_dir.join("notes.txt")),
+        (&forwarded[4], attachment_folder.clone()),
+    ] {
+        assert_eq!(item["path"], path.to_str().unwrap());
+    }
+    assert_eq!(forwarded[0]["text"], attachment_text);
+    assert_eq!(forwarded[5]["path"], project_file.to_str().unwrap());
+    assert_eq!(
+        turn["result"]["attachmentDataBase64"],
+        json!([
+            "aGVsbG8=",
+            "dGV4dCBhdHRhY2htZW50Cg==",
+            "dGV4dCBhdHRhY2htZW50Cg=="
+        ])
     );
     assert_eq!(
-        receive()["result"]["thread"]["cwd"],
-        second.to_str().unwrap()
+        turn["result"]["attachmentDirectories"],
+        json!([["nested.txt"]])
     );
-    send(
-        &mut input,
-        json!({"id":7,"method":"skills/list","params":{"cwds":[alias,second]}}),
+    assert_eq!(backend_count("start"), 3);
+    let copies = fs::read_to_string(&copy_log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Vec<String>>(line).unwrap())
+        .filter(|args| args.first().is_some_and(|arg| arg == "cp"))
+        .collect::<Vec<_>>();
+    assert_eq!(copies.len(), 6);
+    for source in [
+        restored_file,
+        restored_folder,
+        attachment_dir.join("image"),
+        attachment_dir.join("notes.txt"),
+        attachment_dir.join("archive.bin"),
+        attachment_folder.clone(),
+    ] {
+        assert!(copies.iter().any(|args| {
+            args[1] == source.to_str().unwrap()
+                && args[2].split_once(':').map(|(_, path)| path) == source.to_str()
+        }));
+    }
+    assert_eq!(
+        fs::read(copied_path(&attachment_dir.join("archive.bin"))).unwrap(),
+        [0, 1, 254, 255, 10]
     );
-    let skills = receive();
-    assert_eq!(skills["id"], 7);
-    assert_eq!(skills["result"]["data"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        fs::read_to_string(copied_path(&attachment_folder.join("nested.txt"))).unwrap(),
+        "nested attachment"
+    );
     send(
         &mut input,
         json!({"id":8,"method":"fs/writeFile","params":{"path":fixture.project.join("new-file"),"dataBase64":"aGVsbG8="}}),
@@ -478,7 +692,7 @@ fn installed_adapter_routes_multiple_projects_and_restored_threads_from_rpc() {
     );
     send(
         &mut input,
-        json!({"id":6,"method":"test/approval","params":{"threadId":second_thread}}),
+        json!({"id":6,"method":"test/approval","params":{"threadId":"saved-thread"}}),
     );
     let mut approvals = Vec::new();
     for _ in 0..4 {
@@ -500,24 +714,46 @@ fn installed_adapter_routes_multiple_projects_and_restored_threads_from_rpc() {
         assert_eq!(approved["method"], "test/approved");
         assert_eq!(approved["params"]["cwd"], approved["params"]["answer"]);
     }
-    // The configured one-second timeout releases an unused backend.
+    // Inspection failures and live background processes preserve an unused
+    // project backend. Once activity ends, a new full timeout must elapse.
+    fs::write(&activity, "error").unwrap();
     send(
         &mut input,
         json!({"id":30,"method":"thread/unsubscribe","params":{"threadId":first_thread}}),
     );
     assert!(receive().get("result").is_some());
+    std::thread::sleep(Duration::from_millis(2_500));
+    assert_eq!(backend_count("stop"), 1);
+    fs::write(&activity, "python3 -m http.server 8080").unwrap();
+    std::thread::sleep(Duration::from_millis(1_500));
+    assert_eq!(backend_count("stop"), 1);
+    fs::remove_file(&activity).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(backend_count("stop"), 1);
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
-    while backend_count("stop") == 0 && std::time::Instant::now() < deadline {
+    while backend_count("stop") < 2 && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert_eq!(backend_count("start"), 3);
-    assert_eq!(backend_count("stop"), 1);
+    assert_eq!(backend_count("stop"), 2);
+    assert_eq!(
+        fs::read_to_string(&diagnostics)
+            .unwrap()
+            .matches("cannot inspect its processes")
+            .count(),
+        1
+    );
     send(
         &mut input,
-        json!({"id":31,"method":"thread/read","params":{"threadId":second_thread}}),
+        json!({"id":31,"method":"thread/read","params":{"threadId":"later-saved-thread"}}),
     );
     assert!(receive().get("result").is_some());
-    assert_eq!(backend_count("start"), 3);
+    send(
+        &mut input,
+        json!({"id":32,"method":"thread/turns/list","params":{"threadId":"later-saved-thread"}}),
+    );
+    assert!(receive().get("result").is_some());
+    assert_eq!(backend_count("start"), 4);
     drop(input);
     assert!(child.wait().unwrap().success());
 }

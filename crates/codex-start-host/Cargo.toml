@@ -27,6 +27,7 @@ flate2.workspace = true
 fs2.workspace = true
 ratatui.workspace = true
 reqwest.workspace = true
+rusqlite.workspace = true
 rustls.workspace = true
 secrecy.workspace = true
 semver.workspace = true
@@ -47,7 +48,22 @@ walkdir.workspace = true
 zeroize.workspace = true
 zip.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+portable-pty = "=0.9.0"
+nix = { version = "0.30", features = ["signal", "process"] }
+codex-start-remote = { version = "0.2.0-rc.1", path = "../codex-start-remote" }
+codex-start-transport = { version = "0.2.0-rc.1", path = "../codex-start-transport" }
+axum.workspace = true
+hex.workspace = true
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
+futures.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+qrcode.workspace = true
+
 [dev-dependencies]
+codex-start-client = { version = "0.2.0-rc.1", path = "../codex-start-client" }
 assert_cmd.workspace = true
 predicates.workspace = true
 

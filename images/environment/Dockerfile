@@ -7,6 +7,7 @@ FROM ${RUST_IMAGE} AS helper-builder
 WORKDIR /source
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY vendor ./vendor
 COPY xtask ./xtask
 RUN cargo build --locked --release --package codex-start-proxy --bins
 

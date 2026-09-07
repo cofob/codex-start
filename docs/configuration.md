@@ -39,7 +39,7 @@ The scalar settings are:
 | `worktree` | `auto`, `always`, or `never`. |
 | `home` | Select a globally defined Codex home. |
 | `name` | Reusable worktree/container name. |
-| `publish` | Port specifications such as `127.0.0.1:8080:80/tcp`. |
+| `publish` | Port specifications such as `127.0.0.1:8080:80/tcp`; ignored when `network = "host"`. |
 | `rebuild` | Rebuild build-backed environment and sidecar images. |
 | `tty` | `auto`, `always`, or `never`. |
 | `workdir` | Absolute container working-directory override. |
@@ -78,7 +78,7 @@ Use `worktree cleanup` for explicit worktree removal. Automatic cleanup does not
 
 `codex-start run --ephemeral` disables session management at CLI precedence; `--persistent` forces it on. These runner flags are parsed only before the `--` passthrough delimiter, so native Codex flags with the same spelling after the delimiter remain untouched. Session metadata and private launch material live below the XDG data root. Redacted `session list/show` output never includes the host SSH-agent path, authentication tokens, or resolved secret values.
 
-`[settings.adapter]` in the global config controls idle project servers for Desktop and IDE connections. `idle_timeout_seconds` defaults to `1800` (30 minutes) and must be at least `1`. The adapter reads it once at connection startup. It does not stop loaded threads, active turns, pending requests, or approvals. See [adapter settings](adapter.md).
+`[settings.adapter]` in the global config controls idle project servers for Desktop and IDE connections. `idle_timeout_seconds` defaults to `300` (five minutes) and must be at least `1`. The adapter reads it once at connection startup. It does not stop loaded threads, active turns, pending requests, approvals, or containers with another live process. See [adapter settings](adapter.md).
 
 `[settings.resources]` applies typed limits to the primary Codex workload container. It does not constrain the egress sidecar or host bridge processes. Every field is optional; when the table is absent, Docker or Podman retains its normal defaults. Resource fields follow normal per-field configuration precedence and may also be supplied by an environment manifest's `[settings.resources]` table.
 
@@ -227,6 +227,8 @@ The explicit form is `codex-start run [ENVIRONMENT] -- CODEX_ARGS...`. For pi-st
 - `path` uses an explicit absolute Codex directory and optional agents directory.
 
 Use `home import` and `home export` for deliberate migration. They take an exclusive codex-start home lock, reject overlapping or symlinked copy targets, skip codex-start's own lock and live SQLite sidecar files, and omit a SQLite database when a WAL, SHM, or rollback journal is observed during the staged copy. Ordinary project files such as `Cargo.lock` are copied.
+
+Use `codex-start home backfill default` to add chats and projects from the host `~/.codex` directory to the managed `default` home. Use `--from PATH` to select a different Codex home. Stop all sessions that use the target home before you run the command. Backfill takes an exclusive home lock because it updates Codex SQLite indexes. The command is repeatable. It keeps existing target chats, history records, and projects. It copies missing rollout and chat artifact files, paginated turn history, thread index records, and projects. It does not copy authentication, configuration, plugins, or other profile settings.
 
 ## Secrets
 

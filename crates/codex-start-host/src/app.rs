@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs::{self, OpenOptions},
-    io::IsTerminal,
+    io::{IsTerminal, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
     str::FromStr,
@@ -60,8 +60,8 @@ use crate::{
     },
 };
 
-const MANAGED_LABEL: &str = "io.codex-start.managed";
-const SESSION_LABEL: &str = "io.codex-start.session";
+const MANAGED_LABEL: &str = "cs.fob.wtf.managed";
+const SESSION_LABEL: &str = "cs.fob.wtf.session";
 const SESSION_WORKER_ENV: &str = "CODEX_START_SESSION_WORKER";
 const SESSION_NAME_ENV: &str = "CODEX_START_SESSION_NAME";
 const SESSION_AGENT_TARGET_ENV: &str = "CODEX_START_SESSION_AGENT_TARGET";
@@ -74,6 +74,9 @@ const SESSION_PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
 pub async fn run(cli: Cli) -> Result<u8> {
     initialize_logging(cli.verbose, cli.quiet, cli.output);
     let output = cli.output;
+    if crate::remote::is_remote_command(cli.command.as_ref()) {
+        return crate::remote::dispatch(&cli).await;
+    }
     if let Some(Command::UpdateApply(args)) = cli.command.clone() {
         return crate::update::apply_staged(args);
     }
@@ -91,7 +94,18 @@ pub async fn run(cli: Cli) -> Result<u8> {
     if let Some(action) = legacy_action(&cli.legacy)? {
         return dispatch_legacy(action, &cli, &context).await;
     }
+    dispatch_command(cli, context, output).await
+}
+
+async fn dispatch_command(cli: Cli, context: ConfigContext, output: OutputFormat) -> Result<u8> {
     match cli.command {
+        Some(
+            Command::Daemon(_)
+            | Command::Connect(_)
+            | Command::Approve { .. }
+            | Command::Device(_)
+            | Command::ConnectionPassword(_),
+        ) => unreachable!("remote command handled before configuration discovery"),
         Some(Command::Adapter(_) | Command::AdapterSetup(_)) => {
             unreachable!("handled before normal launch dispatch")
         }
@@ -177,14 +191,14 @@ async fn execute_adapter(cli: &Cli, mut args: crate::cli::AdapterArgs) -> Result
     }
     if args.project.is_none()
         && !args.options.dry_run
-        && (args.codex_args.is_empty() || args.codex_args.iter().any(|arg| arg == "app-server"))
+        && codex_app_server_requested(&args.codex_args)
     {
         if std::io::stdin().is_terminal() {
             eprintln!(
                 "codex-start-adapter: starting a server for Desktop or VS Code; it waits for JSON requests on stdin. For an interactive session, run codex-start."
             );
         }
-        return crate::adapter_broker::run(&args.codex_args, cli.config.as_deref()).await;
+        return crate::adapter_broker::run(&args, cli.config.as_deref()).await;
     }
     // Executable probes from a GUI can start at `/`. Never mount that directory.
     let scratch = if args.project.is_none() && !args.options.dry_run {
@@ -205,6 +219,51 @@ async fn execute_adapter(cli: &Cli, mut args: crate::cli::AdapterArgs) -> Result
         Ok,
     )?;
     let context = ConfigContext::discover_at(cli.config.as_deref(), &cwd)?;
+    #[cfg(unix)]
+    if !args.options.dry_run
+        && codex_app_server_requested(&args.codex_args)
+        // Broker-owned workers must keep their foreground lifecycle. A remote
+        // bridge intentionally retains its worker after client EOF, which
+        // prevents the broker from stopping and removing the container.
+        && std::env::var_os(crate::adapter::ATTACHMENT_RUNTIME_INFO_ENV).is_none()
+        && std::env::var_os(crate::remote::registry::WORKER_ID).is_none()
+        && crate::remote::registry::enabled(cli).await
+    {
+        return crate::remote::registry::bridge(cli).await;
+    }
+    #[cfg(unix)]
+    if let Ok(id) = std::env::var(crate::remote::registry::WORKER_ID) {
+        let id = Uuid::parse_str(&id)
+            .map_err(|_| HostError::Usage("invalid adapter worker ID".into()))?;
+        if args.codex_args.is_empty() {
+            args.codex_args.push("app-server".into());
+        }
+        let mut filtered = Vec::new();
+        let mut skip = false;
+        for value in args.codex_args {
+            if skip {
+                skip = false;
+                continue;
+            }
+            if value == "--listen" {
+                skip = true;
+                continue;
+            }
+            if value.to_str().is_some_and(|v| v.starts_with("--listen=")) {
+                continue;
+            }
+            filtered.push(value);
+        }
+        filtered.extend([
+            "--listen".into(),
+            format!(
+                "unix://{}",
+                crate::remote::registry::socket(&id.to_string())
+            )
+            .into(),
+        ]);
+        args.codex_args = filtered;
+    }
     let args = crate::adapter::run_args(args);
     let launch = resolve_run(&context, &args, RunKind::Adapter)?;
     Box::pin(execute_resolved_run(
@@ -215,6 +274,10 @@ async fn execute_adapter(cli: &Cli, mut args: crate::cli::AdapterArgs) -> Result
         cli.output,
     ))
     .await
+}
+
+fn codex_app_server_requested(arguments: &[OsString]) -> bool {
+    arguments.is_empty() || arguments.iter().any(|argument| argument == "app-server")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -326,6 +389,7 @@ fn validate_legacy_action_payload(action: LegacyAction, command: Option<&Command
 
 fn legacy_run_options(options: &LegacyOptions) -> RunOptions {
     RunOptions {
+        profile: None,
         name: options.name.clone(),
         network: options.no_network.then_some(NetworkModeArg::Allowlist),
         no_worktree: options.no_worktree,
@@ -418,7 +482,7 @@ async fn execute_session(
         SessionCommand::Start(mut args) => {
             args.options.persistent = true;
             args.options.ephemeral = false;
-            execute_run(context, args, RunKind::Codex, output).await
+            execute_run(context, *args, RunKind::Codex, output).await
         }
         command => crate::session::execute(context, command, output),
     }
@@ -796,6 +860,7 @@ fn merge_run_args(environment: Option<String>, options: MergeRunOptions) -> RunA
     RunArgs {
         environment,
         options: RunOptions {
+            profile: None,
             name: None,
             runtime: options.runtime,
             runtime_program: options.runtime_program,
@@ -978,7 +1043,22 @@ async fn execute_run(
         }
         return result;
     }
+    // An explicitly started daemon opts new interactive launches into a shared socket.
+    #[cfg(unix)]
+    let remote_session = kind == RunKind::Codex
+        && args.codex_args.is_empty()
+        && !args.options.ephemeral
+        && !args.options.dry_run
+        && crate::remote::registry::enabled_for(&context.global_file).await;
+    #[cfg(unix)]
+    if remote_session {
+        args.options.persistent = true;
+    }
     let mut launch = resolve_run(context, &args, kind)?;
+    #[cfg(unix)]
+    if remote_session {
+        launch.config.sessions.on_tui_exit = codex_start_core::SessionExitBehavior::Detach;
+    }
     if args.options.dry_run
         && session_plan_kind(&launch.config, kind, &args.codex_args)
             == Some(PlannedSessionKind::Interactive)
@@ -1036,6 +1116,7 @@ fn start_persistent_run(
     if launch.config.name.is_none() {
         record.alias = format!("session-{}", &record.id.simple().to_string()[..8]);
     }
+    record.profile.clone_from(&launch.config.selected_profile);
     record.container_name = container_name(
         &launch.environment.name,
         project_name,
@@ -1153,10 +1234,8 @@ fn start_persistent_run(
         && std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
     {
-        return match wait_for_session_container(&runtime, &store, &record)? {
-            SessionWaitOutcome::Ready => crate::session::attach_record(&store, &record),
-            SessionWaitOutcome::FollowingLogs => Ok(0),
-        };
+        wait_for_session_container(&runtime, &store, &record)?;
+        return crate::session::attach_record(&store, &record);
     }
     Ok(0)
 }
@@ -1192,21 +1271,27 @@ fn is_executable_file(path: &Path) -> bool {
     }
 }
 
-enum SessionWaitOutcome {
-    Ready,
-    FollowingLogs,
-}
-
 fn wait_for_session_container(
     runtime: &Runtime,
     store: &SessionStore,
     record: &SessionRecord,
-) -> Result<SessionWaitOutcome> {
+) -> Result<()> {
     let started = std::time::Instant::now();
     let deadline = started + SESSION_STARTUP_TIMEOUT;
     let mut next_progress = started;
+    let mut following_logs = false;
+    let mut log_position = 0;
     loop {
-        let container_running = runtime.container_state(&record.container_name)? == Some(true);
+        let container_state = runtime.container_runtime_state(&record.container_name)?;
+        if following_logs {
+            print_session_log_updates(store, record.id, &mut log_position)?;
+        }
+        if let Some(state) = &container_state
+            && (state.restarting || state.restart_count > 0)
+        {
+            return fail_restarting_session(runtime, store, record, state);
+        }
+        let container_running = container_state.as_ref().is_some_and(|state| state.running);
         if container_running {
             let ready = record.kind != SessionKind::Interactive
                 || runtime.exec_probe(
@@ -1218,7 +1303,11 @@ fn wait_for_session_container(
                     ],
                 )?;
             if ready {
-                return Ok(SessionWaitOutcome::Ready);
+                if following_logs {
+                    print_session_log_updates(store, record.id, &mut log_position)?;
+                    eprintln!("session is ready; connecting to Codex");
+                }
+                return Ok(());
             }
         }
         let current = store.read(record.id)?;
@@ -1231,10 +1320,10 @@ fn wait_for_session_container(
                 record.id
             )));
         }
-        if follow_logs_requested()? {
+        if !following_logs && follow_logs_requested()? {
             eprintln!("following logs for session {} (Ctrl-C to stop)", record.id);
-            crate::session::follow_log(store, record.id, true)?;
-            return Ok(SessionWaitOutcome::FollowingLogs);
+            following_logs = true;
+            print_session_log_updates(store, record.id, &mut log_position)?;
         }
         let now = std::time::Instant::now();
         if now >= next_progress {
@@ -1243,11 +1332,18 @@ fn wait_for_session_container(
             } else {
                 "preparing the environment image and container"
             };
-            eprintln!(
-                "waiting for session {}: {phase} ({}s elapsed; press Enter to follow logs)",
-                record.id,
-                now.duration_since(started).as_secs()
-            );
+            let elapsed = now.duration_since(started).as_secs();
+            if following_logs {
+                eprintln!(
+                    "waiting for session {}: {phase} ({elapsed}s elapsed)",
+                    record.id
+                );
+            } else {
+                eprintln!(
+                    "waiting for session {}: {phase} ({elapsed}s elapsed; press Enter to follow logs)",
+                    record.id
+                );
+            }
             next_progress = now + SESSION_PROGRESS_INTERVAL;
         }
         if now >= deadline {
@@ -1259,6 +1355,83 @@ fn wait_for_session_container(
         "session {} did not become ready within 10 minutes",
         record.id
     )))
+}
+
+fn print_session_log_updates(store: &SessionStore, id: Uuid, position: &mut u64) -> Result<()> {
+    let path = store.log_path(id);
+    let mut file = fs::File::open(&path).map_err(|source| HostError::io(&path, source))?;
+    file.seek(SeekFrom::Start(*position))
+        .map_err(|source| HostError::io(&path, source))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|source| HostError::io(&path, source))?;
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    std::io::stdout()
+        .write_all(&bytes)
+        .map_err(|source| HostError::io("stdout", source))?;
+    std::io::stdout()
+        .flush()
+        .map_err(|source| HostError::io("stdout", source))?;
+    *position = position.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+    Ok(())
+}
+
+fn fail_restarting_session(
+    runtime: &Runtime,
+    store: &SessionStore,
+    record: &SessionRecord,
+    state: &crate::runtime::ContainerRuntimeState,
+) -> Result<()> {
+    let stop_error = runtime.stop_container(&record.container_name).err();
+    let exit_code = if state.restarting || !state.running {
+        u8::try_from(state.exit_code).ok()
+    } else {
+        None
+    };
+    store.update(record.id, |current| {
+        current.exit_code = exit_code;
+        current.status = SessionStatus::Failed;
+    })?;
+    let log = recent_session_log(store, record.id)?;
+    let engine_error = if state.error.is_empty() {
+        "none"
+    } else {
+        &state.error
+    };
+    let stop_diagnostic = stop_error.map_or_else(String::new, |error| {
+        format!("\ncould not stop the restarting container: {error}")
+    });
+    let exit_diagnostic = exit_code.map_or_else(
+        || "last exit code unavailable after automatic restart".to_owned(),
+        |code| format!("last exit code {code}"),
+    );
+    let log_diagnostic = if log.is_empty() {
+        "\nrecent session log: empty".to_owned()
+    } else {
+        format!("\nrecent session log:\n{log}")
+    };
+    Err(HostError::Runtime(format!(
+        "session {} container {:?} entered a restart loop ({exit_diagnostic}, restart count {}, OOM killed: {}, engine error: {engine_error}).{stop_diagnostic}{log_diagnostic}\nfull log: codex-start session logs {}",
+        record.id, record.container_name, state.restart_count, state.oom_killed, record.id
+    )))
+}
+
+fn recent_session_log(store: &SessionStore, id: Uuid) -> Result<String> {
+    const LIMIT: u64 = 8 * 1_024;
+    let path = store.log_path(id);
+    let mut file = fs::File::open(&path).map_err(|source| HostError::io(&path, source))?;
+    let length = file
+        .metadata()
+        .map_err(|source| HostError::io(&path, source))?
+        .len();
+    file.seek(SeekFrom::Start(length.saturating_sub(LIMIT)))
+        .map_err(|source| HostError::io(&path, source))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|source| HostError::io(&path, source))?;
+    Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
 }
 
 fn follow_logs_requested() -> Result<bool> {
@@ -1561,7 +1734,7 @@ fn prepare_runtime_run(
         );
     }
     if launch.merge.is_some() {
-        labels.insert("io.codex-start.operation".to_owned(), "merge".to_owned());
+        labels.insert("cs.fob.wtf.operation".to_owned(), "merge".to_owned());
     }
     Ok(RuntimeRunOutcome::Ready(Box::new(PreparedRuntimeRun {
         runtime,
@@ -1587,23 +1760,23 @@ fn attach_unambiguous_shell(
     let mut candidates = Vec::new();
     for name in container_names(&rows.stdout_text()) {
         let matches = runtime
-            .container_label(&name, "io.codex-start.role")?
+            .container_label(&name, "cs.fob.wtf.role")?
             .as_deref()
             == Some("workload")
             && runtime
-                .container_label(&name, "io.codex-start.project")?
+                .container_label(&name, "cs.fob.wtf.project")?
                 .as_deref()
                 == Some(launch.project_id.as_str())
             && runtime
-                .container_label(&name, "io.codex-start.environment")?
+                .container_label(&name, "cs.fob.wtf.environment")?
                 .as_deref()
                 == Some(launch.environment.name.as_str())
             && runtime
-                .container_label(&name, "io.codex-start.home")?
+                .container_label(&name, "cs.fob.wtf.home")?
                 .as_deref()
                 == Some(launch.config.home_name.as_str())
             && runtime
-                .container_label(&name, "io.codex-start.network")?
+                .container_label(&name, "cs.fob.wtf.network")?
                 .as_deref()
                 == Some(network_label(launch.config.network));
         if matches {
@@ -1716,15 +1889,12 @@ async fn prepare_host_features(
     }
     allow_private.sort();
     allow_private.dedup();
-    let mut ports = prepared.resources.ports.clone();
-    ports.extend(service_plan.publish.clone());
-    ports.extend(parse_publish_specs(&launch.config.publish)?);
-    validate_and_deduplicate_ports(&mut ports)?;
-    if launch.config.network == NetworkMode::Host && !ports.is_empty() {
-        return Err(HostError::Config(
-            "port publication cannot be combined with host networking".to_owned(),
-        ));
-    }
+    let ports = resolve_published_ports(
+        launch.config.network,
+        &prepared.resources.ports,
+        &service_plan.publish,
+        &launch.config.publish,
+    )?;
     let secrets = prepare_secrets(
         &launch.config,
         &launch.environment.secret_refs,
@@ -2088,11 +2258,24 @@ async fn execute_prepared_run(
     );
     host.services.check_health().await?;
     host.services.release_port_reservations();
+    #[cfg(unix)]
+    if let Ok(id) = std::env::var(crate::remote::registry::WORKER_ID) {
+        crate::remote::registry::register(
+            &id,
+            &prepared.runtime,
+            &prepared.run_name,
+            &context.cwd,
+            &prepared.container_workdir,
+            &launch.environment.name,
+            launch.config.selected_profile.as_deref(),
+        )?;
+    }
     let persistent_interactive = std::env::var_os(SESSION_INTERACTIVE_ENV).is_some();
     let ExecutionArtifacts {
         request,
         _init: init_bundle,
     } = artifacts;
+    write_adapter_runtime_info(&prepared.runtime, &prepared.run_name)?;
     let run_result = if persistent_interactive {
         run_without_signal_cleanup(&prepared.runtime, request).await
     } else {
@@ -2142,6 +2325,36 @@ async fn execute_prepared_run(
         "Codex environment exited"
     );
     Ok(status)
+}
+
+#[cfg(unix)]
+fn write_adapter_runtime_info(runtime: &Runtime, container: &str) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let Some(path) = std::env::var_os(crate::adapter::ATTACHMENT_RUNTIME_INFO_ENV) else {
+        return Ok(());
+    };
+    let path = PathBuf::from(path);
+    let container = container.as_bytes();
+    let container_length = u32::try_from(container.len())
+        .map_err(|_| HostError::Runtime("adapter container name is too long".to_owned()))?;
+    let mut contents = Vec::with_capacity(9 + container.len() + runtime.program().len());
+    contents.extend_from_slice(b"CSA2");
+    contents.push(match runtime.kind() {
+        RuntimeKind::Auto | RuntimeKind::Docker => b'd',
+        RuntimeKind::Podman => b'p',
+    });
+    contents.extend_from_slice(&container_length.to_be_bytes());
+    contents.extend_from_slice(container);
+    contents.extend_from_slice(runtime.program().as_bytes());
+    let temporary = path.with_extension(format!("tmp-{}", Uuid::new_v4()));
+    fs::write(&temporary, contents).map_err(|source| HostError::io(&temporary, source))?;
+    fs::rename(&temporary, &path).map_err(|source| HostError::io(&path, source))
+}
+
+#[cfg(not(unix))]
+fn write_adapter_runtime_info(_runtime: &Runtime, _container: &str) -> Result<()> {
+    Ok(())
 }
 
 async fn supervise_persistent_interactive(
@@ -2303,9 +2516,7 @@ fn preview_topology(options: &PreviewPlanOptions<'_>) -> Result<PreviewTopology>
     let resources = options
         .catalog
         .resources(environment, options.project_id, &run_id)?;
-    let mut ports = resources.ports.clone();
-    ports.extend(parse_publish_specs(&config.publish)?);
-    validate_and_deduplicate_ports(&mut ports)?;
+    let ports = resolve_published_ports(config.network, &resources.ports, &[], &config.publish)?;
     let gateway = match config.runtime {
         CoreRuntimeKind::Podman => "host.containers.internal",
         CoreRuntimeKind::Auto | CoreRuntimeKind::Docker => "host.docker.internal",
@@ -2545,7 +2756,7 @@ fn preview_run_request(
         &topology.run_id,
     );
     if options.merge.is_some() {
-        labels.insert("io.codex-start.operation".to_owned(), "merge".to_owned());
+        labels.insert("cs.fob.wtf.operation".to_owned(), "merge".to_owned());
     }
     let mut add_hosts = BTreeMap::new();
     if matches!(
@@ -2880,16 +3091,16 @@ fn workload_labels(
 ) -> BTreeMap<String, String> {
     BTreeMap::from([
         (MANAGED_LABEL.to_owned(), "true".to_owned()),
-        ("io.codex-start.project".to_owned(), project_id.to_owned()),
-        ("io.codex-start.run".to_owned(), run_id.to_owned()),
-        ("io.codex-start.role".to_owned(), "workload".to_owned()),
+        ("cs.fob.wtf.project".to_owned(), project_id.to_owned()),
+        ("cs.fob.wtf.run".to_owned(), run_id.to_owned()),
+        ("cs.fob.wtf.role".to_owned(), "workload".to_owned()),
         (
-            "io.codex-start.environment".to_owned(),
+            "cs.fob.wtf.environment".to_owned(),
             environment.name.clone(),
         ),
-        ("io.codex-start.home".to_owned(), config.home_name.clone()),
+        ("cs.fob.wtf.home".to_owned(), config.home_name.clone()),
         (
-            "io.codex-start.network".to_owned(),
+            "cs.fob.wtf.network".to_owned(),
             format!("{:?}", config.network).to_ascii_lowercase(),
         ),
     ])
@@ -2912,13 +3123,13 @@ fn execute_worktree(
         WorktreeCommand::List => {
             let worktrees = repo.list_workspaces(&base, &resolved.config.git.branch_prefix)?;
             let human = if worktrees.is_empty() {
-                "No codex-start managed worktrees.".to_owned()
+                "No linked project worktrees.".to_owned()
             } else {
                 worktrees
                     .iter()
                     .map(|worktree| {
                         format!(
-                            "{}\t{}\t{}\t{}",
+                            "{}\t{}\t{}\t{}\t{}",
                             worktree.name,
                             if worktree.current {
                                 "current"
@@ -2927,7 +3138,8 @@ fn execute_worktree(
                             } else {
                                 "clean"
                             },
-                            worktree.branch,
+                            worktree.branch.as_deref().unwrap_or("detached"),
+                            worktree.owner.as_str(),
                             worktree.path.display()
                         )
                     })
@@ -2938,7 +3150,7 @@ fn execute_worktree(
             Ok(0)
         }
         WorktreeCommand::Commit(selection) => {
-            let source = repo.select_workspace(
+            let source = repo.select_project_worktree(
                 &base,
                 selection.name.as_deref(),
                 &resolved.config.git.branch_prefix,
@@ -2946,7 +3158,7 @@ fn execute_worktree(
             GitRepo::commit(&source)
         }
         WorktreeCommand::Squash(selection) => {
-            let source = repo.select_workspace(
+            let source = repo.select_project_worktree(
                 &base,
                 selection.name.as_deref(),
                 &resolved.config.git.branch_prefix,
@@ -2954,7 +3166,7 @@ fn execute_worktree(
             repo.squash(&source)
         }
         WorktreeCommand::Move(selection) => {
-            let source = repo.select_workspace(
+            let source = repo.select_project_worktree(
                 &base,
                 selection.name.as_deref(),
                 &resolved.config.git.branch_prefix,
@@ -2968,7 +3180,7 @@ fn execute_worktree(
             Ok(0)
         }
         WorktreeCommand::Edit(selection) => {
-            let source = repo.select_workspace(
+            let source = repo.select_project_worktree(
                 &base,
                 selection.name.as_deref(),
                 &resolved.config.git.branch_prefix,
@@ -3047,7 +3259,7 @@ fn manager_move_worktree(context: &ConfigContext, name: &str) -> String {
             .clone()
             .unwrap_or_else(|| context.paths.worktrees_dir());
         let source =
-            repo.select_workspace(&base, Some(name), &resolved.config.git.branch_prefix)?;
+            repo.select_project_worktree(&base, Some(name), &resolved.config.git.branch_prefix)?;
         repo.move_changes(&source)
     })();
     result.map_or_else(
@@ -3118,7 +3330,7 @@ fn execute_resources(
         ResourcesCommand::Stop { name } => {
             require_owned_container(&runtime, &name)?;
             let run_id = runtime
-                .container_label(&name, "io.codex-start.run")?
+                .container_label(&name, "cs.fob.wtf.run")?
                 .ok_or_else(|| {
                     HostError::Runtime(format!("container {name:?} has no run identity"))
                 })?;
@@ -3126,7 +3338,7 @@ fn execute_resources(
             let mut stopped = 0_usize;
             for candidate in container_names(&containers.stdout_text()) {
                 if runtime
-                    .container_label(&candidate, "io.codex-start.run")?
+                    .container_label(&candidate, "cs.fob.wtf.run")?
                     .as_deref()
                     == Some(&run_id)
                     && runtime.container_state(&candidate)? == Some(true)
@@ -3185,7 +3397,7 @@ fn cleanup_resources(
     }
     let mut removed_volumes = 0;
     let mut unowned_volumes_skipped = 0;
-    for name in runtime.list_volume_names("io.codex-start.ephemeral=true")? {
+    for name in runtime.list_volume_names("cs.fob.wtf.ephemeral=true")? {
         if runtime.volume_label(&name, MANAGED_LABEL)?.as_deref() != Some("true") {
             unowned_volumes_skipped += 1;
         } else if runtime.remove_volume(&name, true).is_ok() {
@@ -3328,6 +3540,7 @@ async fn execute_home(
             )?;
             Ok(0)
         }
+        HomeCommand::Backfill { name, from } => backfill_home(context, &name, from, output),
         HomeCommand::Export {
             name,
             to,
@@ -3370,6 +3583,57 @@ async fn execute_home(
             .await
         }
     }
+}
+
+fn host_codex_home() -> Result<PathBuf> {
+    let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(variable)
+        .map(PathBuf::from)
+        .map(|path| path.join(".codex"))
+        .ok_or_else(|| HostError::Config(format!("{variable} is not set")))
+}
+
+fn backfill_home(
+    context: &ConfigContext,
+    name: &str,
+    from: Option<PathBuf>,
+    output: OutputFormat,
+) -> Result<u8> {
+    let config = context.resolve(None)?.config;
+    let home_config = config
+        .homes
+        .get(name)
+        .ok_or_else(|| HostError::NotFound(format!("home {name:?}")))?;
+    let home = ResolvedHome::resolve(name, &host_home_spec(home_config), &context.paths)?;
+    let source = from.map_or_else(host_codex_home, Ok)?;
+    let summary = home.backfill_from(&source)?;
+    emit(
+        output,
+        &serde_json::json!({
+            "home": name,
+            "source": source,
+            "chats_found": summary.chats_found,
+            "chats_copied": summary.chats_copied,
+            "files_copied": summary.files_copied,
+            "projects_found": summary.projects_found,
+            "projects_copied": summary.projects_copied,
+            "threads_indexed": summary.threads_indexed,
+            "history_records_copied": summary.history_records_copied,
+            "rollout_paths_rewritten": summary.rollout_paths_rewritten,
+        }),
+        &format!(
+            "found {} chats and {} projects; added {} chats, {} related files, and {} projects to {name}; indexed {} threads, added {} history records, and repaired {} rollout paths",
+            summary.chats_found,
+            summary.projects_found,
+            summary.chats_copied,
+            summary.files_copied,
+            summary.projects_copied,
+            summary.threads_indexed,
+            summary.history_records_copied,
+            summary.rollout_paths_rewritten,
+        ),
+    )?;
+    Ok(0)
 }
 
 fn list_homes(context: &ConfigContext, output: OutputFormat) -> Result<u8> {
@@ -3922,10 +4186,10 @@ fn ensure_cache_volumes(
         };
         let mut volume_labels = BTreeMap::from([
             (MANAGED_LABEL.to_owned(), "true".to_owned()),
-            ("io.codex-start.role".to_owned(), "cache".to_owned()),
+            ("cs.fob.wtf.role".to_owned(), "cache".to_owned()),
         ]);
         if name.contains(run_id) {
-            volume_labels.insert("io.codex-start.ephemeral".to_owned(), "true".to_owned());
+            volume_labels.insert("cs.fob.wtf.ephemeral".to_owned(), "true".to_owned());
             if let Some(session_id) = workload_labels.get(SESSION_LABEL) {
                 volume_labels.insert(SESSION_LABEL.to_owned(), session_id.clone());
             }
@@ -4002,6 +4266,24 @@ fn parse_publish_specs(values: &[String]) -> Result<Vec<PublishRequest>> {
             })
         })
         .collect()
+}
+
+fn resolve_published_ports(
+    network: NetworkMode,
+    environment: &[PublishRequest],
+    services: &[PublishRequest],
+    configured: &[String],
+) -> Result<Vec<PublishRequest>> {
+    // Host networking shares the host network namespace. Port publication is
+    // redundant there, so ignore every source, including invalid user specs.
+    if network == NetworkMode::Host {
+        return Ok(Vec::new());
+    }
+    let mut ports = environment.to_vec();
+    ports.extend_from_slice(services);
+    ports.extend(parse_publish_specs(configured)?);
+    validate_and_deduplicate_ports(&mut ports)?;
+    Ok(ports)
 }
 
 fn validate_and_deduplicate_ports(ports: &mut Vec<PublishRequest>) -> Result<()> {
@@ -4165,7 +4447,7 @@ fn require_owned_container(runtime: &Runtime, name: &str) -> Result<()> {
 fn require_owned_project_container(runtime: &Runtime, name: &str, project_id: &str) -> Result<()> {
     require_owned_container(runtime, name)?;
     if runtime
-        .container_label(name, "io.codex-start.project")?
+        .container_label(name, "cs.fob.wtf.project")?
         .as_deref()
         == Some(project_id)
     {
@@ -4180,16 +4462,10 @@ fn require_owned_project_container(runtime: &Runtime, name: &str, project_id: &s
 fn require_compatible_workload(runtime: &Runtime, name: &str, launch: &ResolvedRun) -> Result<()> {
     require_owned_project_container(runtime, name, &launch.project_id)?;
     for (label, expected) in [
-        (
-            "io.codex-start.environment",
-            launch.environment.name.as_str(),
-        ),
-        ("io.codex-start.home", launch.config.home_name.as_str()),
-        (
-            "io.codex-start.network",
-            network_label(launch.config.network),
-        ),
-        ("io.codex-start.role", "workload"),
+        ("cs.fob.wtf.environment", launch.environment.name.as_str()),
+        ("cs.fob.wtf.home", launch.config.home_name.as_str()),
+        ("cs.fob.wtf.network", network_label(launch.config.network)),
+        ("cs.fob.wtf.role", "workload"),
     ] {
         let actual = runtime.container_label(name, label)?;
         if actual.as_deref() != Some(expected) {
@@ -4378,15 +4654,30 @@ mod tests {
 
     use super::{
         MERGE_RESULT_FILE, MergeAgentStatus, MergeBundle, MergeSourceMount, RunKind,
-        container_name, derived_allowed_hosts, doctor_container_request, home_doctor_check,
-        is_follow_logs_event, merge_agent_prompt, merge_codex_args,
-        native_codex_override_expressions, native_codex_project_config_paths,
+        codex_app_server_requested, container_name, derived_allowed_hosts,
+        doctor_container_request, home_doctor_check, is_follow_logs_event, merge_agent_prompt,
+        merge_codex_args, native_codex_override_expressions, native_codex_project_config_paths,
         native_codex_urls_from_paths, preview_forwarding_metadata, replace_mount_targets,
-        validate_mount_targets, workload_command,
+        resolve_published_ports, validate_mount_targets, workload_command,
     };
     use crate::git::{AgentMergeSource, AgentMergeTask};
     use crate::launch_plan::ForwardingTransport;
-    use crate::runtime::{MountKind, MountRequest};
+    use crate::runtime::{MountKind, MountRequest, PublishRequest};
+
+    #[test]
+    fn adapter_detects_app_server_after_global_codex_options() {
+        assert!(codex_app_server_requested(&[]));
+        assert!(codex_app_server_requested(&[
+            OsString::from("-c"),
+            OsString::from("features.code_mode_host=true"),
+            OsString::from("app-server"),
+            OsString::from("--analytics-default-enabled"),
+        ]));
+        assert!(!codex_app_server_requested(&[
+            OsString::from("exec"),
+            OsString::from("--help"),
+        ]));
+    }
 
     #[test]
     fn worktree_cleanup_defaults_on_and_can_be_disabled() {
@@ -4693,6 +4984,30 @@ mod tests {
         let mut conflicting = vec![first, test_mount("cache-b", "/home/codex/.cache", false)];
         let error = validate_mount_targets(&mut conflicting).expect_err("conflict");
         assert!(error.to_string().contains("conflicting mounts target"));
+    }
+
+    #[test]
+    fn host_network_ignores_all_published_ports() {
+        let environment = PublishRequest {
+            host_ip: "127.0.0.1".parse().unwrap(),
+            host_port: 5_173,
+            container_port: 5_173,
+            protocol: "tcp".to_owned(),
+        };
+        let service = PublishRequest {
+            host_ip: "127.0.0.1".parse().unwrap(),
+            host_port: 1_455,
+            container_port: 1_455,
+            protocol: "tcp".to_owned(),
+        };
+        let ports = resolve_published_ports(
+            NetworkMode::Host,
+            &[environment],
+            &[service],
+            &["not-a-port".to_owned()],
+        )
+        .expect("host network ignores port publication");
+        assert!(ports.is_empty());
     }
 
     #[test]

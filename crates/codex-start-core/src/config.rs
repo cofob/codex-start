@@ -93,7 +93,7 @@ pub struct AdapterConfig {
 impl Default for AdapterConfig {
     fn default() -> Self {
         Self {
-            idle_timeout_seconds: 1800,
+            idle_timeout_seconds: 300,
         }
     }
 }
@@ -1370,7 +1370,7 @@ impl ConfigPatch {
                 handshake_timeout_seconds: Some(5),
             }),
             adapter: Some(AdapterPatch {
-                idle_timeout_seconds: Some(1800),
+                idle_timeout_seconds: Some(300),
             }),
             sessions: Some(SessionPatch {
                 enabled: Some(false),
@@ -2065,7 +2065,7 @@ fn effective_from_patch(
         resources: resources.into(),
         sessions: sessions.into(),
         adapter: AdapterConfig {
-            idle_timeout_seconds: adapter.idle_timeout_seconds.unwrap_or(1800),
+            idle_timeout_seconds: adapter.idle_timeout_seconds.unwrap_or(300),
         },
         updates: updates.into(),
         codex: CodexConfig {
@@ -2528,11 +2528,6 @@ fn validate_effective(config: &EffectiveConfig) -> Result<(), ConfigError> {
             });
         }
     }
-    if config.network == NetworkMode::Host && !config.publish.is_empty() {
-        return Err(ConfigError::Invalid(
-            "published ports cannot be combined with host networking".into(),
-        ));
-    }
     Ok(())
 }
 
@@ -2750,7 +2745,7 @@ mod tests {
                 .config
                 .adapter
                 .idle_timeout_seconds,
-            1800
+            300
         );
         let patch: ConfigPatch = toml::from_str("[adapter]\nidle_timeout_seconds = 60").unwrap();
         let mut resolver = ConfigResolver::new();
@@ -3282,6 +3277,27 @@ mod tests {
         let config = merged.codex.expect("codex").config;
         assert_eq!(config["model"].as_str(), Some("new"));
         assert_eq!(config["effort"].as_str(), Some("high"));
+    }
+
+    #[test]
+    fn host_network_allows_published_ports_for_the_launcher_to_ignore() {
+        let document = ConfigDocument::parse(
+            r#"
+            schema_version = 1
+            [settings]
+            network = "host"
+            publish = ["127.0.0.1:5173:5173/tcp"]
+            "#,
+            "global",
+        )
+        .expect("parse");
+        let mut resolver = ConfigResolver::new();
+        resolver
+            .add_document(ConfigLayerKind::Global, "global", document)
+            .expect("add layer");
+        let config = resolver.resolve().expect("resolve").config;
+        assert_eq!(config.network, NetworkMode::Host);
+        assert_eq!(config.publish, ["127.0.0.1:5173:5173/tcp"]);
     }
 
     #[test]

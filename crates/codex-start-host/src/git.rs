@@ -8,7 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use codex_start_core::ProjectIdentity;
+use codex_start_core::{ProjectIdentity, canonical_path_hash};
 use serde::Serialize;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
@@ -68,16 +68,36 @@ pub struct Workspace {
     pub branch_created: bool,
 }
 
-/// Read-only metadata for one verified codex-start-managed worktree.
+/// The process that owns the lifecycle of a registered worktree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeOwner {
+    /// codex-start created the worktree and can remove it.
+    CodexStart,
+    /// Another client created the worktree. codex-start must not remove it.
+    External,
+}
+
+impl WorktreeOwner {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CodexStart => "codex-start",
+            Self::External => "external",
+        }
+    }
+}
+
+/// Read-only metadata for one verified project worktree.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ManagedWorktree {
+pub struct ProjectWorktree {
     pub name: String,
-    pub branch: String,
+    pub branch: Option<String>,
     pub head: String,
     pub path: PathBuf,
     pub dirty: bool,
     pub modified_unix_seconds: u64,
     pub current: bool,
+    pub owner: WorktreeOwner,
 }
 
 /// One immutable source selected for an agent-assisted merge.
@@ -463,17 +483,42 @@ impl GitRepo {
         Ok(selected)
     }
 
-    /// List verified codex-start-managed worktrees for this repository.
+    /// Select a registered worktree that project lifecycle commands can use.
+    ///
+    /// This includes worktrees that codex-start owns and worktrees that an
+    /// external client, such as the `ChatGPT` desktop app, registered in Git.
+    pub fn select_project_worktree(
+        &self,
+        base_dir: &Path,
+        name: Option<&str>,
+        branch_prefix: &str,
+    ) -> Result<PathBuf> {
+        let worktrees = self.list_workspaces(base_dir, branch_prefix)?;
+        let selected = if let Some(name) = name {
+            worktrees
+                .iter()
+                .find(|worktree| worktree.name == name)
+                .ok_or_else(|| HostError::NotFound(format!("worktree {name:?}")))?
+        } else {
+            worktrees
+                .first()
+                .ok_or_else(|| HostError::NotFound("project worktrees".to_owned()))?
+        };
+        Ok(selected.path.clone())
+    }
+
+    /// List verified linked worktrees for this repository.
+    ///
+    /// codex-start-owned worktrees are found in `base_dir`. Other worktrees
+    /// come from Git's worktree registry and stay under their external owner's
+    /// lifecycle control.
     pub fn list_workspaces(
         &self,
         base_dir: &Path,
         branch_prefix: &str,
-    ) -> Result<Vec<ManagedWorktree>> {
+    ) -> Result<Vec<ProjectWorktree>> {
         let project_dir = base_dir.join(format!("{}-{}", self.project_name, self.project_id));
-        if !project_dir.exists() {
-            return Ok(Vec::new());
-        }
-        if !project_dir.is_dir() {
+        if project_dir.exists() && !project_dir.is_dir() {
             return Err(HostError::UnsafePath {
                 path: project_dir,
                 reason: "managed worktree project path must be a directory".to_owned(),
@@ -482,41 +527,65 @@ impl GitRepo {
         let prefix = normalize_branch_prefix(branch_prefix)?;
         let current_root = canonical_or_original(&self.root);
         let mut worktrees = Vec::new();
-        for entry in
-            fs::read_dir(&project_dir).map_err(|source| HostError::io(&project_dir, source))?
-        {
-            let entry = entry.map_err(|source| HostError::io(&project_dir, source))?;
-            let file_type = entry
-                .file_type()
-                .map_err(|source| HostError::io(entry.path(), source))?;
-            if !file_type.is_dir() {
+        let mut listed_paths = BTreeSet::new();
+        let mut listed_names = BTreeSet::new();
+        if project_dir.is_dir() {
+            for entry in
+                fs::read_dir(&project_dir).map_err(|source| HostError::io(&project_dir, source))?
+            {
+                let entry = entry.map_err(|source| HostError::io(&project_dir, source))?;
+                let file_type = entry
+                    .file_type()
+                    .map_err(|source| HostError::io(entry.path(), source))?;
+                if !file_type.is_dir() {
+                    continue;
+                }
+                let path = entry.path();
+                let candidate = self.verify_owned_worktree(&path, &prefix, None, &project_dir)?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                listed_names.insert(name.clone());
+                listed_paths.insert(canonical_or_original(&path));
+                let modified_unix_seconds = modified_unix_seconds(&path)?;
+                worktrees.push(ProjectWorktree {
+                    name,
+                    branch: candidate.current_branch()?,
+                    head: git_text(&path, ["rev-parse", "HEAD"])?,
+                    dirty: has_changes(&path)?,
+                    current: canonical_or_original(&path) == current_root,
+                    path,
+                    modified_unix_seconds,
+                    owner: WorktreeOwner::CodexStart,
+                });
+            }
+        }
+
+        for path in self.registered_worktrees()? {
+            let canonical = canonical_or_original(&path);
+            if listed_paths.contains(&canonical) || !path.is_dir() {
                 continue;
             }
-            let path = entry.path();
-            let candidate = self.verify_owned_worktree(&path, &prefix, None, &project_dir)?;
-            let metadata = entry
-                .metadata()
-                .map_err(|source| HostError::io(&path, source))?;
-            let modified_unix_seconds = metadata
-                .modified()
-                .unwrap_or(UNIX_EPOCH)
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let branch = candidate.current_branch()?.ok_or_else(|| {
-                HostError::Git(format!(
-                    "managed worktree {} has detached HEAD",
-                    path.display()
-                ))
-            })?;
-            worktrees.push(ManagedWorktree {
-                name: entry.file_name().to_string_lossy().into_owned(),
-                branch,
+            let candidate = Self::require(&path)?;
+            if !candidate.is_linked()
+                || canonical_or_original(&candidate.common_dir)
+                    != canonical_or_original(&self.common_dir)
+            {
+                continue;
+            }
+            let mut name = external_worktree_name(&path);
+            if !listed_names.insert(name.clone()) {
+                name = format!("{name}@{}", &canonical_path_hash(&path)[..8]);
+                listed_names.insert(name.clone());
+            }
+            listed_paths.insert(canonical);
+            worktrees.push(ProjectWorktree {
+                name,
+                branch: candidate.current_branch()?,
                 head: git_text(&path, ["rev-parse", "HEAD"])?,
                 dirty: has_changes(&path)?,
+                modified_unix_seconds: modified_unix_seconds(&path)?,
                 current: canonical_or_original(&path) == current_root,
                 path,
-                modified_unix_seconds,
+                owner: WorktreeOwner::External,
             });
         }
         worktrees.sort_by(|left, right| {
@@ -545,9 +614,10 @@ impl GitRepo {
                 "target worktree must be clean before squash".to_owned(),
             ));
         }
-        let branch = git_text(source, ["rev-parse", "--abbrev-ref", "HEAD"])?;
-        autosave(source, &format!("codex-start: autosave {branch}"))?;
-        run_checked(&self.git_spec(["merge", "--squash", &branch]))?;
+        let source_name = git_text(source, ["rev-parse", "--abbrev-ref", "HEAD"])?;
+        autosave(source, &format!("codex-start: autosave {source_name}"))?;
+        let source_head = git_text(source, ["rev-parse", "HEAD"])?;
+        run_checked(&self.git_spec(["merge", "--squash", &source_head]))?;
         let staged = run_capture(&self.git_spec(["diff", "--cached", "--quiet"]))?;
         if staged.status.success() {
             return Ok(0);
@@ -563,8 +633,8 @@ impl GitRepo {
                 "target worktree must be clean before move".to_owned(),
             ));
         }
-        let branch = git_text(source, ["rev-parse", "--abbrev-ref", "HEAD"])?;
-        let base = merge_base(&self.root, &branch)?;
+        let source_head = git_text(source, ["rev-parse", "HEAD"])?;
+        let base = merge_base(&self.root, &source_head)?;
         let patch_output = run_checked(&CommandSpec::new("git").args([
             "-C",
             source.to_string_lossy().as_ref(),
@@ -741,6 +811,29 @@ impl GitRepo {
             .map(bytes_to_path)
             .collect())
     }
+}
+
+fn external_worktree_name(path: &Path) -> String {
+    let leaf = path
+        .file_name()
+        .unwrap_or_else(|| OsStr::new("worktree"))
+        .to_string_lossy();
+    let parent = path
+        .parent()
+        .and_then(Path::file_name)
+        .unwrap_or_else(|| OsStr::new("external"))
+        .to_string_lossy();
+    format!("{leaf}@{parent}")
+}
+
+fn modified_unix_seconds(path: &Path) -> Result<u64> {
+    let metadata = fs::metadata(path).map_err(|source| HostError::io(path, source))?;
+    Ok(metadata
+        .modified()
+        .unwrap_or(UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs())
 }
 
 fn git_absolute(cwd: &Path, argument: &str) -> Result<PathBuf> {
@@ -1047,7 +1140,9 @@ mod tests {
 
     #[cfg(unix)]
     use super::ensure_safe_parent;
-    use super::{GitRepo, WorktreeMode, sanitize_branch_component, sanitize_name};
+    use super::{
+        GitRepo, WorktreeMode, WorktreeOwner, git_text, sanitize_branch_component, sanitize_name,
+    };
     use crate::command::{CommandSpec, run_checked};
 
     fn git(path: &Path, args: &[&str]) {
@@ -1150,7 +1245,8 @@ mod tests {
             .find(|worktree| worktree.name == "first")
             .expect("first record");
         assert!(first_record.current);
-        assert_eq!(first_record.branch, "codex/first");
+        assert_eq!(first_record.branch.as_deref(), Some("codex/first"));
+        assert_eq!(first_record.owner, WorktreeOwner::CodexStart);
         assert!(!first_record.dirty);
         assert_eq!(first_record.head.len(), 40);
         assert!(
@@ -1161,6 +1257,108 @@ mod tests {
         let json = serde_json::to_value(first_record).expect("serialize record");
         assert_eq!(json["current"], true);
         assert_eq!(json["name"], "first");
+        assert_eq!(json["owner"], "codex_start");
+    }
+
+    #[test]
+    fn lists_and_selects_external_detached_worktrees_without_cleaning_them() {
+        let repo_dir = repository();
+        let base = tempfile::tempdir().expect("worktree base");
+        let external_root = tempfile::tempdir().expect("external worktree root");
+        let external_parent = external_root.path().join("6cfd");
+        fs::create_dir(&external_parent).expect("external parent");
+        let external = external_parent.join("project");
+        git(
+            repo_dir.path(),
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                external.to_str().expect("external path"),
+                "HEAD",
+            ],
+        );
+        fs::write(external.join("README.md"), "external\n").expect("external change");
+
+        let repo = GitRepo::require(repo_dir.path()).expect("discover");
+        let listed = repo
+            .list_workspaces(base.path(), "codex/")
+            .expect("list worktrees");
+        assert_eq!(listed.len(), 1);
+        let record = &listed[0];
+        assert_eq!(record.name, "project@6cfd");
+        assert_eq!(record.branch, None);
+        assert_eq!(record.owner, WorktreeOwner::External);
+        assert!(record.dirty);
+        assert_eq!(
+            repo.select_project_worktree(base.path(), Some(&record.name), "codex/")
+                .expect("select external"),
+            fs::canonicalize(&external).expect("canonical external")
+        );
+
+        assert_eq!(
+            repo.cleanup_owned(base.path(), "codex/", true)
+                .expect("clean owned worktrees"),
+            (0, 0)
+        );
+        assert!(external.is_dir());
+    }
+
+    #[test]
+    fn moves_changes_from_an_external_detached_worktree() {
+        let repo_dir = repository();
+        let external_root = tempfile::tempdir().expect("external worktree root");
+        let external = external_root.path().join("detached");
+        git(
+            repo_dir.path(),
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                external.to_str().expect("external path"),
+                "HEAD",
+            ],
+        );
+        fs::write(external.join("README.md"), "detached change\n").expect("external change");
+
+        let repo = GitRepo::require(repo_dir.path()).expect("discover");
+        repo.move_changes(&external).expect("move detached changes");
+        assert_eq!(
+            fs::read_to_string(repo_dir.path().join("README.md")).expect("target file"),
+            "detached change\n"
+        );
+    }
+
+    #[test]
+    fn squashes_changes_from_an_external_detached_worktree() {
+        let repo_dir = repository();
+        git(repo_dir.path(), &["config", "core.editor", "true"]);
+        let original_head =
+            git_text(repo_dir.path(), ["rev-parse", "HEAD"]).expect("original head");
+        let external_root = tempfile::tempdir().expect("external worktree root");
+        let external = external_root.path().join("detached");
+        git(
+            repo_dir.path(),
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                external.to_str().expect("external path"),
+                "HEAD",
+            ],
+        );
+        fs::write(external.join("README.md"), "detached squash\n").expect("external change");
+
+        let repo = GitRepo::require(repo_dir.path()).expect("discover");
+        assert_eq!(repo.squash(&external).expect("squash detached changes"), 0);
+        assert_ne!(
+            git_text(repo_dir.path(), ["rev-parse", "HEAD"]).expect("new head"),
+            original_head
+        );
+        assert_eq!(
+            fs::read_to_string(repo_dir.path().join("README.md")).expect("target file"),
+            "detached squash\n"
+        );
     }
 
     #[test]

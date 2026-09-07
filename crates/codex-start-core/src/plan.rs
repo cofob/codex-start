@@ -448,9 +448,9 @@ impl ContainerPlan {
             workdir,
             env: BTreeMap::new(),
             labels: BTreeMap::from([
-                ("io.codex-start.managed".into(), "true".into()),
-                ("io.codex-start.project".into(), project_id),
-                ("io.codex-start.run".into(), run_id.to_string()),
+                ("cs.fob.wtf.managed".into(), "true".into()),
+                ("cs.fob.wtf.project".into(), project_id),
+                ("cs.fob.wtf.run".into(), run_id.to_string()),
             ]),
             mounts: Vec::new(),
             ports: Vec::new(),

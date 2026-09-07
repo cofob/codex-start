@@ -7,6 +7,42 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const LABEL_NAMESPACE: &str = "cs.fob.wtf.";
+const LEGACY_LABEL_NAMESPACE: &str = "io.codex-start.";
+
+fn legacy_label(value: &str) -> Option<String> {
+    value
+        .strip_prefix(LABEL_NAMESPACE)
+        .map(|suffix| format!("{LEGACY_LABEL_NAMESPACE}{suffix}"))
+}
+
+fn merge_output_lines(output: &mut CommandOutput, legacy: CommandOutput) {
+    let mut rows = BTreeMap::new();
+    for line in output
+        .stdout_text()
+        .lines()
+        .chain(legacy.stdout_text().lines())
+        .filter(|line| !line.is_empty())
+    {
+        let key = serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("Names")
+                    .or_else(|| value.get("Name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| line.to_owned());
+        rows.entry(key).or_insert_with(|| line.to_owned());
+    }
+    output.stdout = rows
+        .into_values()
+        .collect::<Vec<_>>()
+        .join("\n")
+        .into_bytes();
+}
+
 #[cfg(unix)]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
@@ -34,6 +70,17 @@ pub enum RuntimeKind {
     Docker,
     /// Podman local or remote client.
     Podman,
+}
+
+/// Engine-reported state used to diagnose container startup failures.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct ContainerRuntimeState {
+    pub running: bool,
+    pub restarting: bool,
+    pub exit_code: u16,
+    pub restart_count: u64,
+    pub oom_killed: bool,
+    pub error: String,
 }
 
 /// Container mount kind.
@@ -496,8 +543,8 @@ impl Runtime {
         let volume = format!("codex-start-probe-vol-{suffix}");
         let container = format!("codex-start-probe-run-{suffix}");
         let labels = BTreeMap::from([
-            ("io.codex-start.managed".to_owned(), "true".to_owned()),
-            ("io.codex-start.probe".to_owned(), id.clone()),
+            ("cs.fob.wtf.managed".to_owned(), "true".to_owned()),
+            ("cs.fob.wtf.probe".to_owned(), id.clone()),
         ]);
 
         let result =
@@ -588,9 +635,9 @@ impl Runtime {
         self.ensure_volume(volume, labels)
             .map_err(|error| capability_error("create a labelled named volume", &error))?;
         self.require_probe_label("volume", volume, id)?;
-        let filtered_networks = self.list_network_names(&format!("io.codex-start.probe={id}"))?;
+        let filtered_networks = self.list_network_names(&format!("cs.fob.wtf.probe={id}"))?;
         require_filtered_resource("network", network, &filtered_networks)?;
-        let filtered_volumes = self.list_volume_names(&format!("io.codex-start.probe={id}"))?;
+        let filtered_volumes = self.list_volume_names(&format!("cs.fob.wtf.probe={id}"))?;
         require_filtered_resource("volume", volume, &filtered_volumes)?;
 
         let host_gateway_checked = matches!(self.kind, RuntimeKind::Docker | RuntimeKind::Auto);
@@ -651,11 +698,8 @@ impl Runtime {
     }
 
     fn require_probe_label(&self, resource: &str, name: &str, id: &str) -> Result<()> {
-        let actual = self.inspect_label(
-            resource,
-            name,
-            "{{ index .Labels \"io.codex-start.probe\" }}",
-        )?;
+        let actual =
+            self.inspect_label(resource, name, "{{ index .Labels \"cs.fob.wtf.probe\" }}")?;
         if actual.as_deref() == Some(id) {
             Ok(())
         } else {
@@ -673,7 +717,7 @@ impl Runtime {
         container: &str,
     ) -> Result<()> {
         let mut failures = Vec::new();
-        match self.container_label(container, "io.codex-start.probe") {
+        match self.container_label(container, "cs.fob.wtf.probe") {
             Ok(Some(owner)) if owner == id => {
                 if let Err(error) = self.remove_container(container, true) {
                     failures.push(format!("container {container:?}: {error}"));
@@ -684,7 +728,7 @@ impl Runtime {
                 "could not verify container {container:?} ownership: {error}"
             )),
         }
-        match self.volume_label(volume, "io.codex-start.probe") {
+        match self.volume_label(volume, "cs.fob.wtf.probe") {
             Ok(Some(owner)) if owner == id => {
                 if let Err(error) = self.remove_volume(volume, true) {
                     failures.push(format!("volume {volume:?}: {error}"));
@@ -695,7 +739,7 @@ impl Runtime {
                 "could not verify volume {volume:?} ownership: {error}"
             )),
         }
-        match self.network_label(network, "io.codex-start.probe") {
+        match self.network_label(network, "cs.fob.wtf.probe") {
             Ok(Some(owner)) if owner == id => {
                 if let Err(error) = self.remove_network(network) {
                     failures.push(format!("network {network:?}: {error}"));
@@ -920,6 +964,34 @@ impl Runtime {
         Ok(Some(output.stdout_text() == "true"))
     }
 
+    /// Inspect the detailed state needed during container startup.
+    pub fn container_runtime_state(&self, name: &str) -> Result<Option<ContainerRuntimeState>> {
+        let output = run_capture(&CommandSpec::new(&self.program).args([
+            "container",
+            "inspect",
+            "--format",
+            concat!(
+                "{\"running\":{{.State.Running}},",
+                "\"restarting\":{{.State.Restarting}},",
+                "\"exit_code\":{{.State.ExitCode}},",
+                "\"restart_count\":{{.RestartCount}},",
+                "\"oom_killed\":{{.State.OOMKilled}},",
+                "\"error\":{{json .State.Error}}}"
+            ),
+            name,
+        ]))?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        serde_json::from_str(&output.stdout_text())
+            .map(Some)
+            .map_err(|error| {
+                HostError::Runtime(format!(
+                    "could not parse state for container {name:?}: {error}"
+                ))
+            })
+    }
+
     /// Remove a container when it exists.
     pub fn remove_container(&self, name: &str, force: bool) -> Result<()> {
         if self.container_state(name)?.is_none() {
@@ -1012,43 +1084,84 @@ impl Runtime {
 
     /// List containers matching an ownership label as JSON-ish rows.
     pub fn list_containers(&self, label: &str, all: bool) -> Result<CommandOutput> {
+        let legacy = legacy_label(label);
         let mut command = CommandSpec::new(&self.program).arg("ps");
         if all {
             command = command.arg("--all");
         }
-        run_checked(&command.args([
+        let mut output = run_checked(&command.clone().args([
             "--filter",
             &format!("label={label}"),
             "--format",
             "{{json .}}",
-        ]))
+        ]))?;
+        if let Some(legacy) = legacy {
+            let legacy = run_checked(&command.args([
+                "--filter",
+                &format!("label={legacy}"),
+                "--format",
+                "{{json .}}",
+            ]))?;
+            merge_output_lines(&mut output, legacy);
+        }
+        Ok(output)
     }
 
     /// Read one label from a container, returning `None` when absent or unknown.
     pub fn container_label(&self, name: &str, label: &str) -> Result<Option<String>> {
-        self.inspect_label(
+        let value = self.inspect_label(
             "container",
             name,
             &format!("{{{{ index .Config.Labels {label:?} }}}}"),
-        )
+        )?;
+        if value.is_some() {
+            return Ok(value);
+        }
+        legacy_label(label).map_or(Ok(None), |legacy| {
+            self.inspect_label(
+                "container",
+                name,
+                &format!("{{{{ index .Config.Labels {legacy:?} }}}}"),
+            )
+        })
     }
 
     /// Read one label from a network, returning `None` when absent or unknown.
     pub fn network_label(&self, name: &str, label: &str) -> Result<Option<String>> {
-        self.inspect_label(
+        let value = self.inspect_label(
             "network",
             name,
             &format!("{{{{ index .Labels {label:?} }}}}"),
-        )
+        )?;
+        if value.is_some() {
+            return Ok(value);
+        }
+        legacy_label(label).map_or(Ok(None), |legacy| {
+            self.inspect_label(
+                "network",
+                name,
+                &format!("{{{{ index .Labels {legacy:?} }}}}"),
+            )
+        })
     }
 
     /// Read one label from a volume, returning `None` when absent or unknown.
     pub fn volume_label(&self, name: &str, label: &str) -> Result<Option<String>> {
-        self.inspect_label(
+        let value = self.inspect_label(
             "volume",
             name,
             &format!("{{{{ index .Labels {label:?} }}}}"),
-        )
+        )?;
+        if value.is_some() {
+            return Ok(value);
+        }
+        legacy_label(label).map_or(Ok(None), |legacy| {
+            self.inspect_label(
+                "volume",
+                name,
+                &format!("{{{{ index .Labels {legacy:?} }}}}"),
+            )
+        })
     }
 
     fn inspect_label(&self, resource: &str, name: &str, template: &str) -> Result<Option<String>> {
@@ -1065,20 +1178,29 @@ impl Runtime {
 
     /// List owned network names by label.
     pub fn list_network_names(&self, label: &str) -> Result<Vec<String>> {
-        let output = run_checked(&CommandSpec::new(&self.program).args([
-            "network",
-            "ls",
-            "--filter",
-            &format!("label={label}"),
-            "--format",
-            "{{.Name}}",
-        ]))?;
-        Ok(output
-            .stdout_text()
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(str::to_owned)
-            .collect())
+        let list = |label: &str| -> Result<Vec<String>> {
+            let output = run_checked(&CommandSpec::new(&self.program).args([
+                "network",
+                "ls",
+                "--filter",
+                &format!("label={label}"),
+                "--format",
+                "{{.Name}}",
+            ]))?;
+            Ok(output
+                .stdout_text()
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect())
+        };
+        let mut names = list(label)?;
+        if let Some(legacy) = legacy_label(label) {
+            names.extend(list(&legacy)?);
+        }
+        names.sort();
+        names.dedup();
+        Ok(names)
     }
 
     /// Ensure an engine-managed volume exists and carries ownership labels.
@@ -1105,20 +1227,29 @@ impl Runtime {
 
     /// List volume names by ownership label.
     pub fn list_volume_names(&self, label: &str) -> Result<Vec<String>> {
-        let output = run_checked(&CommandSpec::new(&self.program).args([
-            "volume",
-            "ls",
-            "--filter",
-            &format!("label={label}"),
-            "--format",
-            "{{.Name}}",
-        ]))?;
-        Ok(output
-            .stdout_text()
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(str::to_owned)
-            .collect())
+        let list = |label: &str| -> Result<Vec<String>> {
+            let output = run_checked(&CommandSpec::new(&self.program).args([
+                "volume",
+                "ls",
+                "--filter",
+                &format!("label={label}"),
+                "--format",
+                "{{.Name}}",
+            ]))?;
+            Ok(output
+                .stdout_text()
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect())
+        };
+        let mut names = list(label)?;
+        if let Some(legacy) = legacy_label(label) {
+            names.extend(list(&legacy)?);
+        }
+        names.sort();
+        names.dedup();
+        Ok(names)
     }
 
     /// Remove a named volume when present.
@@ -1439,8 +1570,9 @@ mod tests {
     };
 
     use super::{
-        BuildRequest, MountKind, MountRequest, PublishRequest, RunRequest, Runtime, RuntimeKind,
-        WorkloadIdentityMode, help_has_option, identity_option, parse_runtime_version,
+        BuildRequest, ContainerRuntimeState, MountKind, MountRequest, PublishRequest, RunRequest,
+        Runtime, RuntimeKind, WorkloadIdentityMode, help_has_option, identity_option, legacy_label,
+        parse_runtime_version,
     };
     use crate::{
         command::IoMode,
@@ -1449,6 +1581,15 @@ mod tests {
 
     const ALL_REQUIRED_OPTIONS: &str = "--add-host --cap-add --cap-drop --label --mount --network \
         --network-alias --read-only --security-opt --userns --internal --alias --filter --format";
+
+    #[test]
+    fn new_label_namespace_maps_to_the_legacy_namespace() {
+        assert_eq!(
+            legacy_label("cs.fob.wtf.managed=true").as_deref(),
+            Some("io.codex-start.managed=true")
+        );
+        assert_eq!(legacy_label("unrelated.label=true"), None);
+    }
 
     fn runtime(kind: RuntimeKind) -> Runtime {
         Runtime {
@@ -1565,7 +1706,7 @@ mod tests {
             remove: true,
             interactive: true,
             tty: true,
-            labels: BTreeMap::from([("io.codex-start.managed".to_owned(), "true".to_owned())]),
+            labels: BTreeMap::from([("cs.fob.wtf.managed".to_owned(), "true".to_owned())]),
             drop_all_capabilities: true,
             add_capabilities: vec!["SETUID".to_owned(), "SETGID".to_owned()],
             ..RunRequest::default()
@@ -1867,6 +2008,38 @@ mod tests {
         let command = runtime(RuntimeKind::Docker).pull_command("example/image:locked");
         assert_eq!(command.args, ["pull", "example/image:locked"]);
         assert_eq!(command.io, IoMode::Diagnostic);
+    }
+
+    #[test]
+    fn reads_restart_diagnostics_from_container_inspection() {
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("mock-docker");
+        write_fake_executable(
+            &executable,
+            br#"#!/bin/sh
+if [ "$1" = container ] && [ "$2" = inspect ]; then
+  echo '{"running":true,"restarting":true,"exit_code":1,"restart_count":3,"oom_killed":false,"error":"init failed"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let runtime = Runtime {
+            kind: RuntimeKind::Docker,
+            program: executable.into(),
+        };
+
+        assert_eq!(
+            runtime.container_runtime_state("broken").unwrap(),
+            Some(ContainerRuntimeState {
+                running: true,
+                restarting: true,
+                exit_code: 1,
+                restart_count: 3,
+                oom_killed: false,
+                error: "init failed".to_owned(),
+            })
+        );
     }
 
     #[test]

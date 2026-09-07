@@ -1,0 +1,4 @@
+[bindings.kotlin]
+package_name = "wtf.fob.cs.nativeclient"
+cdylib_name = "codex_start_android"
+android = true

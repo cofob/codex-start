@@ -28,8 +28,8 @@ const SSH_TARGET_FILE: &str = "ssh-agent-target.json";
 pub(crate) const APP_SERVER_SOCKET: &str = "/home/codex/.local/state/codex-start/app-server.sock";
 pub(crate) const APP_SERVER_ENDPOINT: &str =
     "unix:///home/codex/.local/state/codex-start/app-server.sock";
-const MANAGED_LABEL: &str = "io.codex-start.managed";
-const SESSION_LABEL: &str = "io.codex-start.session";
+const MANAGED_LABEL: &str = "cs.fob.wtf.managed";
+const SESSION_LABEL: &str = "cs.fob.wtf.session";
 
 /// Execution behavior associated with one persistent record.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -85,6 +85,8 @@ pub struct SessionRecord {
     pub project_id: String,
     pub environment: String,
     pub home: String,
+    #[serde(default)]
+    pub profile: Option<String>,
     pub kind: SessionKind,
     pub status: SessionStatus,
     pub runtime: RuntimeKind,
@@ -132,6 +134,7 @@ impl SessionRecord {
             project_id,
             environment,
             home,
+            profile: None,
             kind,
             status: SessionStatus::Starting,
             runtime,
@@ -168,6 +171,7 @@ impl SessionRecord {
             "schema_version": self.schema_version,
             "id": self.id,
             "alias": self.alias,
+            "profile": self.profile,
             "project_id": self.project_id,
             "environment": self.environment,
             "home": self.home,
@@ -668,7 +672,7 @@ fn stop(store: &SessionStore, record: &SessionRecord, output: OutputFormat) -> R
     Ok(0)
 }
 
-fn stop_record(store: &SessionStore, record: &SessionRecord) -> Result<SessionRecord> {
+pub(crate) fn stop_record(store: &SessionStore, record: &SessionRecord) -> Result<SessionRecord> {
     let runtime = runtime(record)?;
     for container in owned_session_containers(&runtime, record)? {
         if runtime.container_state(&container)? == Some(true) {
@@ -688,7 +692,10 @@ fn restart(store: &SessionStore, record: &SessionRecord, output: OutputFormat) -
     Ok(0)
 }
 
-fn restart_record(store: &SessionStore, record: &SessionRecord) -> Result<SessionRecord> {
+pub(crate) fn restart_record(
+    store: &SessionStore,
+    record: &SessionRecord,
+) -> Result<SessionRecord> {
     if record.kind != SessionKind::Interactive {
         return Err(HostError::Usage(
             "non-interactive jobs are never replayed automatically".to_owned(),
@@ -812,7 +819,7 @@ fn recovery_service_path(context: &ConfigContext) -> Result<PathBuf> {
             .ok_or_else(|| HostError::Config("HOME is not set".to_owned()))?;
         Ok(home
             .join("Library/LaunchAgents")
-            .join("io.codex-start.session-recovery.plist"))
+            .join("cs.fob.wtf.session-recovery.plist"))
     }
     #[cfg(target_os = "linux")]
     {
@@ -849,7 +856,7 @@ fn install_recovery_service(path: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let contents = format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>io.codex-start.session-recovery</string>\n<key>ProgramArguments</key><array><string>{}</string><string>session</string><string>recovery</string><string>run</string></array>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n</dict></plist>\n",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>cs.fob.wtf.session-recovery</string>\n<key>ProgramArguments</key><array><string>{}</string><string>session</string><string>recovery</string><string>run</string></array>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n</dict></plist>\n",
             xml_escape(executable)
         );
         atomic_write(path, &contents)?;

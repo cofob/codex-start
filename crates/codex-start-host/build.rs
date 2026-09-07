@@ -31,9 +31,9 @@ fn main() -> io::Result<()> {
     for relative in [
         Path::new("assets"),
         Path::new("images"),
-        Path::new("crates/codex-start-core"),
-        Path::new("crates/codex-start-host"),
-        Path::new("crates/codex-start-proxy"),
+        Path::new("crates"),
+        Path::new("vendor"),
+        Path::new("protocol"),
         Path::new("xtask"),
     ] {
         collect_files(&root, relative, &mut files)?;

@@ -622,6 +622,7 @@ pub fn patch_from_run_options(environment: Option<&str>, options: &RunOptions) -
     };
     ConfigPatch {
         environment: environment.map(str::to_owned),
+        profile: options.profile.clone(),
         runtime: options.runtime.map(|runtime| match runtime {
             RuntimeKind::Auto => CoreRuntimeKind::Auto,
             RuntimeKind::Docker => CoreRuntimeKind::Docker,
@@ -660,6 +661,7 @@ pub fn patch_from_merge_options(
     options: &MergeRunOptions,
 ) -> ConfigPatch {
     let run_options = RunOptions {
+        profile: None,
         name: None,
         runtime: options.runtime,
         runtime_program: options.runtime_program.clone(),

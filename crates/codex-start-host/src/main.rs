@@ -25,6 +25,7 @@ mod locking;
 mod manager_tui;
 mod networking;
 mod paths;
+mod remote;
 mod runtime;
 mod secrets;
 mod session;

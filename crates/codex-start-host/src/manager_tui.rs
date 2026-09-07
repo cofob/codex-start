@@ -22,7 +22,7 @@ use crate::{
     cli::OutputFormat,
     configuration::ConfigContext,
     error::{HostError, Result},
-    git::{GitRepo, ManagedWorktree},
+    git::{GitRepo, ProjectWorktree},
     session::{SessionKind, SessionRecord, SessionStatus, SessionStore},
 };
 
@@ -215,7 +215,7 @@ impl SessionState {
 }
 
 struct WorktreeState {
-    worktrees: Vec<ManagedWorktree>,
+    worktrees: Vec<ProjectWorktree>,
     selected: usize,
     filter: String,
     mode: InputMode<WorktreeManagerAction>,
@@ -223,7 +223,7 @@ struct WorktreeState {
 }
 
 impl WorktreeState {
-    fn new(worktrees: Vec<ManagedWorktree>, notice: Option<String>) -> Self {
+    fn new(worktrees: Vec<ProjectWorktree>, notice: Option<String>) -> Self {
         Self {
             worktrees,
             selected: 0,
@@ -233,7 +233,7 @@ impl WorktreeState {
         }
     }
 
-    fn visible(&self) -> Vec<&ManagedWorktree> {
+    fn visible(&self) -> Vec<&ProjectWorktree> {
         let needle = self.filter.to_ascii_lowercase();
         self.worktrees
             .iter()
@@ -242,7 +242,7 @@ impl WorktreeState {
                     || format!(
                         "{} {} {}",
                         worktree.name,
-                        worktree.branch,
+                        worktree.branch.as_deref().unwrap_or("detached"),
                         worktree.path.display()
                     )
                     .to_ascii_lowercase()
@@ -251,7 +251,7 @@ impl WorktreeState {
             .collect()
     }
 
-    fn selected_worktree(&self) -> Option<&ManagedWorktree> {
+    fn selected_worktree(&self) -> Option<&ProjectWorktree> {
         self.visible().get(self.selected).copied()
     }
 
@@ -575,7 +575,7 @@ fn session_actions(record: &SessionRecord) -> Vec<MenuItem<SessionManagerAction>
     actions
 }
 
-fn worktree_actions(worktree: &ManagedWorktree) -> Vec<MenuItem<WorktreeManagerAction>> {
+fn worktree_actions(worktree: &ProjectWorktree) -> Vec<MenuItem<WorktreeManagerAction>> {
     vec![
         menu(
             "Commit",
@@ -718,7 +718,8 @@ fn render_worktrees(frame: &mut Frame<'_>, state: &WorktreeState) {
             } else {
                 "clean"
             }),
-            Cell::from(worktree.branch.clone()),
+            Cell::from(worktree.branch.as_deref().unwrap_or("detached")),
+            Cell::from(worktree.owner.as_str()),
             Cell::from(relative_age(worktree.modified_unix_seconds)),
         ])
     });
@@ -727,18 +728,19 @@ fn render_worktrees(frame: &mut Frame<'_>, state: &WorktreeState) {
         [
             Constraint::Percentage(28),
             Constraint::Length(10),
-            Constraint::Percentage(44),
+            Constraint::Percentage(32),
+            Constraint::Length(12),
             Constraint::Length(10),
         ],
     )
     .header(
-        Row::new(["Name", "State", "Branch", "Updated"])
+        Row::new(["Name", "State", "Branch", "Owner", "Updated"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Managed worktrees "),
+            .title(" Project worktrees "),
     )
     .row_highlight_style(
         Style::default()
@@ -826,17 +828,18 @@ fn render_session_detail(frame: &mut Frame<'_>, area: Rect, record: Option<&Sess
     );
 }
 
-fn render_worktree_detail(frame: &mut Frame<'_>, area: Rect, worktree: Option<&ManagedWorktree>) {
+fn render_worktree_detail(frame: &mut Frame<'_>, area: Rect, worktree: Option<&ProjectWorktree>) {
     if area.is_empty() {
         return;
     }
     let text = worktree.map_or_else(
-        || "No managed worktrees. A named run creates one automatically.".to_owned(),
+        || "No linked project worktrees. A named run creates one automatically.".to_owned(),
         |worktree| {
             format!(
-                "Name: {}\nBranch: {}\nHEAD: {}\nState: {}\nCurrent: {}\nPath: {}",
+                "Name: {}\nBranch: {}\nOwner: {}\nHEAD: {}\nState: {}\nCurrent: {}\nPath: {}",
                 worktree.name,
-                worktree.branch,
+                worktree.branch.as_deref().unwrap_or("detached"),
+                worktree.owner.as_str(),
                 worktree.head,
                 if worktree.dirty { "dirty" } else { "clean" },
                 worktree.current,
@@ -987,7 +990,7 @@ mod tests {
     };
     use crate::{
         cli::OutputFormat,
-        git::ManagedWorktree,
+        git::{ProjectWorktree, WorktreeOwner},
         runtime::RuntimeKind,
         session::{SessionKind, SessionRecord, SessionStatus},
     };
@@ -1009,15 +1012,16 @@ mod tests {
         record
     }
 
-    fn worktree(name: &str, current: bool) -> ManagedWorktree {
-        ManagedWorktree {
+    fn worktree(name: &str, current: bool) -> ProjectWorktree {
+        ProjectWorktree {
             name: name.to_owned(),
-            branch: format!("codex/{name}"),
+            branch: Some(format!("codex/{name}")),
             head: "0123456789012345678901234567890123456789".to_owned(),
             path: PathBuf::from(format!("/worktrees/{name}")),
             dirty: false,
             modified_unix_seconds: 0,
             current,
+            owner: WorktreeOwner::CodexStart,
         }
     }
 
@@ -1125,7 +1129,7 @@ mod tests {
             .draw(|frame| render_worktrees(frame, &worktrees))
             .expect("render worktrees");
         let narrow_text = buffer_text(&narrow);
-        assert!(narrow_text.contains("Managed worktrees"));
+        assert!(narrow_text.contains("Project worktrees"));
         assert!(narrow_text.contains("agent"));
 
         let empty = WorktreeState::new(Vec::new(), None);
@@ -1133,6 +1137,6 @@ mod tests {
         compact
             .draw(|frame| render_worktrees(frame, &empty))
             .expect("render empty");
-        assert!(buffer_text(&compact).contains("Managed worktrees"));
+        assert!(buffer_text(&compact).contains("Project worktrees"));
     }
 }

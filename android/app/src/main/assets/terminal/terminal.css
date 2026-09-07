@@ -1,0 +1,4 @@
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #101418; }
+#terminal { position: absolute; top: 6px; right: 6px; left: 6px; height: calc(100vh - 12px); }
+.xterm { height: 100%; }
+.xterm .xterm-viewport { background-color: #101418; }

@@ -1,0 +1,2 @@
+-keep class wtf.fob.cs.nativeclient.** { *; }
+-keep class com.sun.jna.** { *; }
