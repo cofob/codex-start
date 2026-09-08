@@ -1294,6 +1294,8 @@ pub struct ConfigPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tty: Option<TtyMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmux: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub workdir: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_hosts: Option<Vec<String>>,
@@ -1332,6 +1334,7 @@ impl ConfigPatch {
             home: Some("default".into()),
             rebuild: Some(false),
             tty: Some(TtyMode::Auto),
+            tmux: Some(false),
             forwarding: Some(ForwardingPatch {
                 ssh_agent: Some(cfg!(unix)),
                 ssh_agent_bridge: Some(SshAgentBridge::Auto),
@@ -1547,6 +1550,8 @@ pub struct EffectiveConfig {
     pub publish: Vec<String>,
     pub rebuild: bool,
     pub tty: TtyMode,
+    #[serde(default)]
+    pub tmux: bool,
     pub workdir: Option<PathBuf>,
     pub allow_hosts: Vec<String>,
     pub allow_ssh_hosts: Vec<String>,
@@ -2015,6 +2020,7 @@ fn effective_from_patch(
         publish: patch.publish.unwrap_or_default(),
         rebuild: patch.rebuild.unwrap_or(false),
         tty: patch.tty.unwrap_or_default(),
+        tmux: patch.tmux.unwrap_or(false),
         workdir: patch.workdir,
         allow_hosts: patch.allow_hosts.unwrap_or_default(),
         allow_ssh_hosts: patch.allow_ssh_hosts.unwrap_or_default(),
@@ -2610,6 +2616,7 @@ fn unknown_field_suggestion(message: &str) -> Option<String> {
         "publish",
         "rebuild",
         "tty",
+        "tmux",
         "workdir",
         "allow_hosts",
         "allow_ssh_hosts",
@@ -2768,6 +2775,46 @@ mod tests {
                 .add_layer(ConfigLayer::new(ConfigLayerKind::Global, "invalid", patch))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn tmux_defaults_off_and_respects_layer_precedence() {
+        let mut resolver = ConfigResolver::new();
+        assert!(!resolver.clone().resolve().unwrap().config.tmux);
+        for (kind, enabled) in [
+            (ConfigLayerKind::Global, true),
+            (ConfigLayerKind::Project, false),
+        ] {
+            resolver
+                .add_layer(ConfigLayer::new(
+                    kind,
+                    "tmux setting",
+                    ConfigPatch {
+                        tmux: Some(enabled),
+                        ..ConfigPatch::default()
+                    },
+                ))
+                .unwrap();
+            let resolved = resolver.clone().resolve().unwrap();
+            assert_eq!(resolved.config.tmux, enabled);
+            assert_eq!(resolved.provenance.source_for("tmux").unwrap().kind, kind);
+        }
+        resolver
+            .add_environment_overrides([("CODEX_START__TMUX", "true")])
+            .unwrap();
+        assert!(resolver.clone().resolve().unwrap().config.tmux);
+        resolver
+            .add_layer(ConfigLayer::new(
+                ConfigLayerKind::CommandLine,
+                "--no-tmux",
+                ConfigPatch {
+                    tmux: Some(false),
+                    ..ConfigPatch::default()
+                },
+            ))
+            .unwrap();
+        assert!(!resolver.resolve().unwrap().config.tmux);
+        assert!(toml::from_str::<ConfigPatch>("tmux = 'yes'").is_err());
     }
 
     #[test]

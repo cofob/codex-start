@@ -140,6 +140,13 @@ class RemoteRepository(
         mutableError.value = null
     }
 
+    /** Wake the existing reconnect loop. Never replace a live client or replay an RPC. */
+    fun retryConnection(server: String) {
+        if (servers.value.any { it.id == server && it.status != "Connected" }) {
+            reconnectSignals[server]?.trySend(Unit)
+        }
+    }
+
     fun report(error: Throwable) {
         if (error is CancellationException) throw error
         mutableError.value = error.message ?: "Operation failed"
@@ -161,6 +168,8 @@ class RemoteRepository(
     }
 
     fun homeQuery(server: String) = RemoteQuery(server, "", "ui/home")
+
+    fun supportsHistory(server: String) = servers.value.any { it.id == server && "hostHistory" in it.capabilities }
 
     fun prefetchSession(
         server: String,
@@ -185,18 +194,23 @@ class RemoteRepository(
         session.getString("id"),
         "ui/chats",
         JSONObject(params.toString()).apply {
-            put("cwd", session.getString("executionCwd"))
+            put("cwd", chatWorkingDirectories(session))
             if (!has("limit")) put("limit", 50)
             if (!has("sourceKinds")) put("sourceKinds", chatSources())
+            if (!has("sortKey")) put("sortKey", "updated_at")
         },
     )
 
     private suspend fun loadQuery(query: RemoteQuery): JSONObject {
         val params = JSONObject(query.parameters)
         return when (query.method) {
-            "ui/chats" -> listProjectChats(query.server, obj("id" to query.session, "executionCwd" to params.getString("cwd")), params)
+            "ui/chats" -> listProjectChats(query.server, obj("id" to query.session), params)
             "ui/home" ->
                 coroutineScope {
+                    val history =
+                        async {
+                            if (supportsHistory(query.server)) data.read(RemoteQuery(query.server, "", "history/list")) else null
+                        }
                     val projects = async { data.read(RemoteQuery(query.server, "", "project/list")) }
                     val sessions = data.read(RemoteQuery(query.server, "", "session/list")).getJSONArray("data").objects()
                     val catalog = projects.await().getJSONArray("data")
@@ -213,7 +227,7 @@ class RemoteRepository(
                     val chatFailure =
                         java.util.concurrent.atomic
                             .AtomicReference<Exception?>()
-                    val projectChats =
+                    val sessionChats =
                         sessions
                             .filter { it.supportsTasks() }
                             .map { session ->
@@ -241,6 +255,14 @@ class RemoteRepository(
                             .distinctBy {
                                 it.getJSONObject("session").text("profile") to it.getJSONObject("chat").text("id")
                             }.sortedByDescending { it.getJSONObject("chat").optLong("updatedAt") }
+                    val saved = history.await()
+                    val projectChats =
+                        (sessionChats + saved?.optJSONArray("data")?.objects().orEmpty())
+                            .distinctBy { chatIdentity(it.getJSONObject("session"), it.getJSONObject("chat")) }
+                            .sortedByDescending { it.getJSONObject("chat").optLong("updatedAt") }
+                    val allProjects =
+                        (catalog.objects() + saved?.optJSONArray("projects")?.objects().orEmpty())
+                            .distinctBy { it.text("path") }
                     val recent = projectChats.take(24)
                     recent.take(3).forEach { item ->
                         data.refresh(
@@ -256,7 +278,7 @@ class RemoteRepository(
                     }
                     val result =
                         obj(
-                            "projects" to catalog,
+                            "projects" to JSONArray(allProjects),
                             "sessions" to JSONArray(sessions),
                             "recent" to JSONArray(recent),
                             "projectChats" to JSONArray(projectChats),
@@ -545,6 +567,7 @@ class RemoteRepository(
             if (method in
                 setOf(
                     "project/add",
+                    "project/createWork",
                     "project/open",
                     "session/create",
                     "session/stop",

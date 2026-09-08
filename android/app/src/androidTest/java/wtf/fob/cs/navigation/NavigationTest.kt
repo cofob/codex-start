@@ -3,6 +3,8 @@ package wtf.fob.cs.navigation
 import android.graphics.Bitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.*
@@ -34,6 +36,26 @@ class NavigationTest {
 
     private fun waitText(value: String) = compose.waitUntil(30_000) { compose.onAllNodesWithText(value).fetchSemanticsNodes().isNotEmpty() }
 
+    private fun waitWorkspace() =
+        compose.waitUntil(30_000) {
+            compose.onAllNodesWithContentDescription("Workspace views").fetchSemanticsNodes().isNotEmpty()
+        }
+
+    private fun chooseView(label: String) {
+        compose.onNodeWithContentDescription("Workspace views").performClick()
+        compose.onNode(hasText(label) and hasAnyAncestor(isPopup())).performClick()
+    }
+
+    private fun assertSystemNavigationVisible() {
+        compose.waitUntil(5000) {
+            compose.runOnUiThread {
+                val insets = ViewCompat.getRootWindowInsets(compose.activity.window.decorView)
+                insets?.isVisible(WindowInsetsCompat.Type.navigationBars()) == true &&
+                    insets.isVisible(WindowInsetsCompat.Type.statusBars())
+            }
+        }
+    }
+
     private fun screenshot(name: String) {
         compose.waitForIdle()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -55,6 +77,9 @@ class NavigationTest {
             val id = fixture.getString("daemonId")
             val appearance = context.getSharedPreferences("appearance", 0)
             val previousTheme = appearance.getString("theme", null)
+            compose.runOnUiThread {
+                compose.activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
             try {
                 val (client, _) = repo.pairInvitation(fixture.getString("invitation"))
                 repo.finishPairing(client)
@@ -79,6 +104,11 @@ class NavigationTest {
                 compose.onNodeWithContentDescription("Switch server or active task").performClick()
                 compose.onNode(hasText("Navigation test server") and hasText("Connected")).performClick()
                 compose.waitUntil(5_000) { compose.onAllNodesWithText("Your workspace").fetchSemanticsNodes().isEmpty() }
+                compose.onNodeWithTag("work-overview").assertExists()
+                compose.onNodeWithText("Navigation test server").assertIsDisplayed()
+                waitText("Review navigation changes")
+                screenshot("work")
+                text("Projects").performClick()
                 waitText("Navigation project")
                 waitText("Review navigation changes")
                 screenshot("projects")
@@ -119,9 +149,16 @@ class NavigationTest {
                 compose.onNodeWithText(fixture.getString("threadId")).assertDoesNotExist()
                 screenshot("chats")
                 text("Review navigation changes").performClick()
-                waitText("Changes")
+                waitWorkspace()
+                text("Changes").assertDoesNotExist()
+                text("Files").assertDoesNotExist()
+                assertSystemNavigationVisible()
+                screenshot("chat-compact")
+                compose.onNodeWithContentDescription("Workspace views").performClick()
                 text("Changes").assertIsDisplayed()
                 text("Files").assertIsDisplayed()
+                screenshot("workspace-menu")
+                text("Chat").performClick()
                 waitText("Ready")
                 text("Read only").assertExists()
                 if (compose.onAllNodesWithContentDescription("Message tools").fetchSemanticsNodes().isNotEmpty()) {
@@ -144,15 +181,31 @@ class NavigationTest {
                 text("Read only").performClick()
                 waitText("Enable writing")
                 compose.onNodeWithContentDescription("Send message").assertIsNotEnabled()
-                waitText("Changes")
+                waitWorkspace()
                 screenshot("read-only")
-                text("Changes").performClick()
-                text("Chat").performClick()
+                chooseView("Changes")
+                assertSystemNavigationVisible()
+                screenshot("diff-compact")
+                chooseView("Files")
+                assertSystemNavigationVisible()
+                screenshot("files-compact")
+                text("Terminal").performClick()
+                compose.onNodeWithContentDescription("Terminal options").assertIsDisplayed()
+                assertSystemNavigationVisible()
+                screenshot("terminal-compact")
+                chooseView("Chat")
+                text("Draft only; do not send").assertExists()
+                chooseView("Terminals")
+                compose.onNodeWithContentDescription("Terminal options").assertIsDisplayed()
+                assertSystemNavigationVisible()
+                compose.onNodeWithContentDescription("Back").performClick()
+                waitWorkspace()
                 text("Draft only; do not send").assertExists()
                 compose.onNodeWithContentDescription("Back").performClick()
+                assertSystemNavigationVisible()
                 compose.waitUntil(30_000) { compose.onAllNodes(hasText("New chat") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
                 text("New chat").performClick()
-                waitText("Changes")
+                waitWorkspace()
                 compose.waitUntil(30_000) { compose.onAllNodesWithTag("conversation-ready").fetchSemanticsNodes().isNotEmpty() }
                 assertNull("A new empty chat must not show a history error", repo.error.value)
                 screenshot("new-chat")
@@ -176,6 +229,9 @@ class NavigationTest {
                 }
                 throw error
             } finally {
+                compose.runOnUiThread {
+                    compose.activity.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
                 repo.forget(id)
                 appearance.edit().putString("theme", previousTheme).apply()
             }

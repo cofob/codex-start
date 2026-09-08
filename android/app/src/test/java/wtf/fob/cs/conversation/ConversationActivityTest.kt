@@ -7,6 +7,17 @@ import org.junit.Test
 import wtf.fob.cs.data.*
 
 class ConversationActivityTest {
+    @Test fun activitySummarizesActionsAndExposesFailures() {
+        val items =
+            listOf("reasoning", "commandExecution", "commandExecution", "fileChange", "plan", "mcpToolCall")
+                .mapIndexed { index, type -> ConversationItem("$index", type, "") }
+        assertEquals("Thinking · 2 commands · 1 file change · Plan · 1 tool call", activitySummary(items))
+        assertFalse(activityFailed(items[1]))
+        assertTrue(activityFailed(conversationItem(obj("id" to "c", "type" to "commandExecution", "exitCode" to 1))))
+        assertTrue(activityFailed(conversationItem(obj("id" to "c", "type" to "fileChange", "status" to "declined"))))
+        assertFalse(activityFailed(conversationItem(obj("id" to "c", "type" to "commandExecution", "exitCode" to JSONObject.NULL))))
+    }
+
     @Test fun consecutiveThinkingAndToolsShareOneStableBlock() {
         val items =
             listOf("userMessage", "reasoning", "commandExecution", "reasoning", "fileChange", "agentMessage", "reasoning")

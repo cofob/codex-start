@@ -69,6 +69,8 @@ pub enum Command {
     Worktree(WorktreeArgs),
     /// Inspect and clean owned runtime resources.
     Resources(ResourcesArgs),
+    /// List and remove unused owned cache volumes.
+    Cache(CacheArgs),
     /// Inspect, build, and update environments.
     Env(EnvironmentArgs),
     /// Manage shared Codex homes.
@@ -200,6 +202,14 @@ pub struct RunOptions {
     /// Do not allocate a pseudo-terminal.
     #[arg(long)]
     pub no_tty: bool,
+
+    /// Start Codex in tmux inside the foreground container.
+    #[arg(long, conflicts_with_all = ["no_tmux", "no_tty", "persistent"])]
+    pub tmux: bool,
+
+    /// Disable tmux for this run, even when enabled in the configuration.
+    #[arg(long, conflicts_with = "tmux")]
+    pub no_tmux: bool,
 
     /// Print the redacted execution plan without changing runtime state.
     #[arg(long)]
@@ -403,6 +413,32 @@ pub enum ResourcesCommand {
         /// Also stop and remove running workloads, including persistent sessions.
         #[arg(long)]
         force: bool,
+    },
+}
+
+/// Cache volume commands for the selected engine.
+#[derive(Clone, Debug, Args)]
+pub struct CacheArgs {
+    /// Runtime override.
+    #[arg(long, value_enum, global = true)]
+    pub runtime: Option<RuntimeKind>,
+    /// Override the runtime executable path.
+    #[arg(long, global = true)]
+    pub runtime_program: Option<PathBuf>,
+    #[command(subcommand)]
+    pub command: CacheCommand,
+}
+
+/// Cache operations never stop containers or force volume removal.
+#[derive(Clone, Debug, Subcommand)]
+pub enum CacheCommand {
+    /// List owned cache volumes and whether containers use them.
+    List,
+    /// Remove all owned cache volumes unused by running or stopped containers.
+    Cleanup {
+        /// List the volumes that would be removed without changing them.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -633,6 +669,12 @@ pub struct DoctorArgs {
 #[derive(Clone, Debug, Default, Args)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct LegacyOptions {
+    /// Start Codex in tmux inside the foreground container.
+    #[arg(long, conflicts_with = "no_tmux")]
+    pub tmux: bool,
+    /// Disable tmux for this run, even when enabled in the configuration.
+    #[arg(long, conflicts_with = "tmux")]
+    pub no_tmux: bool,
     #[arg(short = 'n', long, hide = true)]
     pub name: Option<String>,
     #[arg(long, hide = true)]
@@ -788,6 +830,25 @@ mod tests {
     use super::{
         Cli, Command, HomeCommand, PortProtocol, PortSpec, SessionCommand, WorktreeCommand,
     };
+
+    #[test]
+    fn parses_tmux_and_preserves_codex_arguments() {
+        let run = Cli::try_parse_from(["codex-start", "run", "--tmux", "--", "resume", "--last"])
+            .expect("tmux run");
+        assert!(matches!(run.command, Some(Command::Run(args))
+            if args.options.tmux && args.codex_args == ["resume", "--last"]));
+        let legacy = Cli::try_parse_from(["codex-start", "--tmux"]).expect("bare tmux");
+        assert!(legacy.legacy.tmux);
+        for option in ["--no-tty", "--persistent", "--no-tmux"] {
+            assert!(Cli::try_parse_from(["codex-start", "run", "--tmux", option]).is_err());
+        }
+        let passthrough =
+            Cli::try_parse_from(["codex-start", "run", "--", "--tmux"]).expect("Codex argument");
+        assert!(matches!(passthrough.command, Some(Command::Run(args))
+            if !args.options.tmux && args.codex_args == ["--tmux"]));
+        let disabled = Cli::try_parse_from(["codex-start", "--no-tmux"]).unwrap();
+        assert!(disabled.legacy.no_tmux);
+    }
 
     #[test]
     fn parses_explicit_passthrough_commands_without_clap_assertions() {

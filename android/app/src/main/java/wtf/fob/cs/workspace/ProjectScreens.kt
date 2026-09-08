@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -109,12 +110,16 @@ fun ProjectsScreen(
     open: (JSONObject, JSONObject) -> Unit,
 ) {
     val (query, state) = rememberRemoteData(repo, server, "", "ui/home", enabled = connected)
+    val servers by repo.servers.collectAsState()
     val projects = projectChatGroups(state.value)
     val loading = state.loading
     var search by remember(server) { mutableStateOf("") }
+    var work by rememberSaveable(server) { mutableStateOf(true) }
     var opening by remember(server) { mutableStateOf("") }
     var picker by remember { mutableStateOf(false) }
+    var workDraftId by rememberSaveable(server) { mutableStateOf<String?>(null) }
     var profileProject by remember(server) { mutableStateOf<JSONObject?>(null) }
+    var historyProject by remember(server) { mutableStateOf<JSONObject?>(null) }
     var profiles by remember(server) { mutableStateOf<List<String>>(emptyList()) }
     val scope = rememberCoroutineScope()
 
@@ -126,7 +131,13 @@ fun ProjectsScreen(
             profileProject = null
             opening = project.text("name")
             runCatching {
-                repo.request(server, "project/open", obj("projectId" to project.getString("id"), "profile" to profile)) as JSONObject
+                val registered =
+                    if (project.optBoolean("historyOnly")) {
+                        repo.request(server, "project/add", obj("path" to project.text("path"))) as JSONObject
+                    } else {
+                        project
+                    }
+                repo.request(server, "project/open", obj("projectId" to registered.getString("id"), "profile" to profile)) as JSONObject
             }.onSuccess {
                 repo.prefetchSession(server, it.getJSONObject("session"))
                 open(it.getJSONObject("project"), it.getJSONObject("session"))
@@ -157,104 +168,181 @@ fun ProjectsScreen(
     }, modifier = Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             DataStatus(state) { repo.data.refresh(query, true) }
-            SearchField(search, { search = it }, "Search projects and chats", Modifier.padding(top = 8.dp, bottom = 12.dp))
-            if (opening.isNotEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (opening.isNotEmpty()) {
-                Text(
-                    "Opening $opening…",
-                    Modifier.padding(vertical = 12.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                listOf("Work", "Projects").forEachIndexed { index, label ->
+                    SegmentedButton(
+                        selected = work == (index == 0),
+                        onClick = { work = index == 0 },
+                        shape = SegmentedButtonDefaults.itemShape(index, 2),
+                        icon = {},
+                        label = { Text(label) },
+                    )
+                }
             }
-            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
-                item {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Projects", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                        IconButton(onClick = {
-                            scope.launch { refresh() }
-                        }, enabled = connected && !loading) { Icon(Icons.Default.Refresh, "Refresh projects", Modifier.size(20.dp)) }
-                        TextButton(onClick = { picker = true }, enabled = connected && opening.isEmpty()) {
-                            Icon(Icons.Default.Add, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Add project")
+            SearchField(
+                search,
+                { search = it },
+                if (work) "Search work, projects, and profiles" else "Search projects and chats",
+                Modifier.padding(top = 4.dp, bottom = 8.dp),
+            )
+            if (work) {
+                key(server) {
+                    if (repo.supportsHistory(server)) {
+                        HostHistoryOverview(
+                            repo,
+                            server,
+                            state.value,
+                            search,
+                            connected,
+                            openChat,
+                            chooseProject = {
+                                work = false
+                                search = ""
+                            },
+                            newWork = {
+                                workDraftId =
+                                    java.util.UUID
+                                        .randomUUID()
+                                        .toString()
+                            },
+                        )
+                    } else {
+                        WorkOverview(
+                            state.value,
+                            search,
+                            state.refreshing,
+                            connected,
+                            openChat,
+                            chooseProject = {
+                                work = false
+                                search = ""
+                            },
+                            workSupported =
+                                servers
+                                    .firstOrNull { it.id == server }
+                                    ?.capabilities
+                                    ?.contains("workProjects") == true,
+                            newWork = {
+                                workDraftId =
+                                    java.util.UUID
+                                        .randomUUID()
+                                        .toString()
+                            },
+                        )
+                    }
+                }
+            } else {
+                if (opening.isNotEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (opening.isNotEmpty()) {
+                    Text(
+                        "Opening $opening…",
+                        Modifier.padding(vertical = 12.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
+                    item {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Your projects", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                            IconButton(onClick = {
+                                scope.launch { refresh() }
+                            }, enabled = connected && !loading) { Icon(Icons.Default.Refresh, "Refresh projects", Modifier.size(20.dp)) }
+                            TextButton(onClick = { picker = true }, enabled = connected && opening.isEmpty()) {
+                                Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Add project")
+                            }
                         }
                     }
-                }
-                if (!loading && state.error == null && projects.isEmpty()) {
-                    item {
-                        Text(
-                            if (connected) {
-                                "Choose a folder on this server to start working."
-                            } else {
-                                "Projects will appear when the server connects."
-                            },
-                            Modifier.padding(vertical = 24.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-                if (projects.isNotEmpty() && visibleProjects.isEmpty()) {
-                    item {
-                        EmptyState(
-                            "No matching projects or chats",
-                            "Try another name or open a project to search older chats.",
-                            Icons.Default.SearchOff,
-                        )
-                    }
-                }
-                visibleProjects.forEach { group ->
-                    val project = group.project
-                    item(key = "project/${project.getString("id")}") {
-                        Column {
-                            ProjectRow(project.getString("name"), project.getString("path"), connected && opening.isEmpty()) {
-                                if (repo.servers.value
-                                        .firstOrNull { it.id == server }
-                                        ?.capabilities
-                                        ?.contains("launcherSettings") ==
-                                    true
-                                ) {
-                                    scope.launch {
-                                        opening = project.text("name")
-                                        runCatching {
-                                            val names = repo.data.read(RemoteQuery(server, "", "launcher/list")).getJSONArray("profiles")
-                                            profiles = (0 until names.length()).map { names.getString(it) }
-                                            if (profiles.isEmpty()) openProject(project) else profileProject = project
-                                        }.onFailure(repo::report)
-                                        opening = ""
-                                    }
+                    if (!loading && state.error == null && projects.isEmpty()) {
+                        item {
+                            Text(
+                                if (connected) {
+                                    "Choose a folder on this server to start working."
                                 } else {
-                                    openProject(project)
+                                    "Projects will appear when the server connects."
+                                },
+                                Modifier.padding(vertical = 24.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (projects.isNotEmpty() && visibleProjects.isEmpty()) {
+                        item {
+                            EmptyState(
+                                "No matching projects or chats",
+                                "Try another name or open a project to search older chats.",
+                                Icons.Default.SearchOff,
+                            )
+                        }
+                    }
+                    visibleProjects.forEach { group ->
+                        val project = group.project
+                        item(key = "project/${project.getString("id")}") {
+                            Column {
+                                ProjectRow(project.getString("name"), project.getString("path"), connected && opening.isEmpty()) {
+                                    if (project.optBoolean("historyOnly")) {
+                                        historyProject = project
+                                    } else if (repo.servers.value
+                                            .firstOrNull { it.id == server }
+                                            ?.capabilities
+                                            ?.contains("launcherSettings") ==
+                                        true
+                                    ) {
+                                        scope.launch {
+                                            opening = project.text("name")
+                                            runCatching {
+                                                val names =
+                                                    repo.data
+                                                        .read(
+                                                            RemoteQuery(server, "", "launcher/list"),
+                                                        ).getJSONArray("profiles")
+                                                profiles = (0 until names.length()).map { names.getString(it) }
+                                                if (profiles.isEmpty()) openProject(project) else profileProject = project
+                                            }.onFailure(repo::report)
+                                            opening = ""
+                                        }
+                                    } else {
+                                        openProject(project)
+                                    }
+                                }
+                                if (repo.supportsHistory(server)) {
+                                    TextButton(onClick = { historyProject = project }, enabled = connected) { Text("All project chats") }
+                                }
+                                if (group.chats.isEmpty() && search.isBlank() && !state.refreshing) {
+                                    Text(
+                                        if (repo.supportsHistory(server)) {
+                                            "Open all project chats to see saved history."
+                                        } else {
+                                            "No chats in this project."
+                                        },
+                                        Modifier.padding(start = 52.dp, bottom = 12.dp),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
                             }
-                            if (group.chats.isEmpty() && search.isBlank() && !state.refreshing) {
-                                Text(
-                                    "No chats in this project.",
-                                    Modifier.padding(start = 52.dp, bottom = 12.dp),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                        }
+                        items(
+                            group.chats,
+                            key = { "project/${project.text("id")}/${chatIdentity(it.session, it.chat)}" },
+                        ) { item ->
+                            Box(Modifier.padding(start = 40.dp)) {
+                                ChatRow(item.chat, item.session.text("profile")) { openChat(item) }
                             }
                         }
-                    }
-                    items(
-                        group.chats,
-                        key = { "project/${project.text("id")}/${it.session.text("profile")}/chat/${it.chat.text("id")}" },
-                    ) { item ->
-                        Box(Modifier.padding(start = 40.dp)) {
-                            ChatRow(item.chat, item.session.text("profile")) { openChat(item) }
+                        item(key = "project/${project.getString("id")}/divider") {
+                            HorizontalDivider(Modifier.padding(bottom = 8.dp))
                         }
                     }
-                    item(key = "project/${project.getString("id")}/divider") {
-                        HorizontalDivider(Modifier.padding(bottom = 8.dp))
-                    }
-                }
-                if (projects.isNotEmpty()) {
-                    item {
-                        Text(
-                            "Recent chats are shown here. Open a project to see all its chats.",
-                            Modifier.padding(vertical = 12.dp),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                    if (projects.isNotEmpty()) {
+                        item {
+                            Text(
+                                "Recent chats are shown here. Open a project to see all its chats.",
+                                Modifier.padding(vertical = 12.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                     }
                 }
             }
@@ -267,6 +355,43 @@ fun ProjectsScreen(
             profiles.forEach { profile ->
                 SettingsRow(profile, icon = Icons.Default.Tune, onClick = { openProject(project, profile) })
             }
+        }
+    }
+    historyProject?.let { project ->
+        NativeSheet(project.text("name"), { historyProject = null }) {
+            var projectSearch by remember { mutableStateOf("") }
+            SearchField(projectSearch, { projectSearch = it }, "Search project chats")
+            Box(Modifier.fillMaxWidth().fillMaxHeight(0.85f)) {
+                HostHistoryOverview(
+                    repo,
+                    server,
+                    state.value,
+                    projectSearch,
+                    connected,
+                    open = {
+                        historyProject = null
+                        openChat(it)
+                    },
+                    chooseProject = {
+                        historyProject = null
+                        openProject(project)
+                    },
+                    newWork = {
+                        historyProject = null
+                        workDraftId =
+                            java.util.UUID
+                                .randomUUID()
+                                .toString()
+                    },
+                    cwd = project.text("path"),
+                )
+            }
+        }
+    }
+    workDraftId?.let { id ->
+        NewWorkSheet(repo, server, id, { workDraftId = null }) { recent ->
+            workDraftId = null
+            openChat(recent)
         }
     }
     if (picker) {
@@ -392,7 +517,7 @@ fun ProjectsScreen(
     var submittedSearch by remember { mutableStateOf("") }
     var archived by remember { mutableStateOf(false) }
     val parameters =
-        obj("limit" to 50, "sourceKinds" to chatSources(), "cwd" to session.getString("executionCwd")).apply {
+        obj("limit" to 50, "sourceKinds" to chatSources(), "cwd" to chatWorkingDirectories(session), "sortKey" to "updated_at").apply {
             if (archived) put("archived", true)
             if (submittedSearch.isNotBlank()) put("searchTerm", submittedSearch)
         }
@@ -422,7 +547,7 @@ fun ProjectsScreen(
         runCatching {
             if (append) {
                 val result = repo.listProjectChats(server, session, JSONObject(parameters.toString()).put("cursor", cursor))
-                extra = (extra + result.getJSONArray("data").objects()).take(500)
+                extra = (extra + result.getJSONArray("data").objects()).distinctBy { it.text("id") }
                 nextCursor = result.text("nextCursor")
             } else {
                 repo.data.read(query, true)

@@ -636,6 +636,13 @@ pub fn patch_from_run_options(environment: Option<&str>, options: &RunOptions) -
             .then(|| options.publish.iter().map(render_port).collect()),
         rebuild: options.rebuild.then_some(true),
         tty: options.no_tty.then_some(TtyMode::Never),
+        tmux: if options.tmux {
+            Some(true)
+        } else if options.no_tmux {
+            Some(false)
+        } else {
+            None
+        },
         sessions: if options.persistent {
             Some(SessionPatch {
                 enabled: Some(true),
@@ -675,6 +682,8 @@ pub fn patch_from_merge_options(
         rebuild: options.rebuild,
         pull: options.pull,
         no_tty: options.no_tty,
+        tmux: false,
+        no_tmux: true,
         dry_run: options.dry_run,
         persistent: false,
         ephemeral: true,

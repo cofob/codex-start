@@ -3,6 +3,7 @@ package wtf.fob.cs.conversation
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -10,7 +11,9 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import wtf.fob.cs.data.*
@@ -73,6 +76,33 @@ internal fun activityText(item: ConversationItem): String {
     }.ifBlank { item.text }
 }
 
+internal fun activitySummary(items: List<ConversationItem>): String {
+    fun count(
+        type: String,
+        single: String,
+        plural: String = "${single}s",
+    ): String? {
+        val count = items.count { it.type == type }
+        return if (count == 0) null else "$count ${if (count == 1) single else plural}"
+    }
+    val known = setOf("reasoning", "commandExecution", "fileChange", "webSearch", "plan")
+    val other = items.count { it.type !in known }
+    return listOfNotNull(
+        "Thinking".takeIf { items.any { it.type == "reasoning" } },
+        count("commandExecution", "command"),
+        count("fileChange", "file change"),
+        count("webSearch", "search", "searches"),
+        "Plan".takeIf { items.any { it.type == "plan" } },
+        "$other ${if (other == 1) "tool call" else "tool calls"}".takeIf { other > 0 },
+    ).joinToString(" · ")
+}
+
+internal fun activityFailed(item: ConversationItem): Boolean =
+    item.details?.let {
+        it.text("status") in setOf("failed", "declined") ||
+            (it.has("exitCode") && !it.isNull("exitCode") && it.optInt("exitCode") != 0)
+    } == true
+
 @Composable
 fun ConversationActivity(
     block: ConversationBlock,
@@ -81,17 +111,12 @@ fun ConversationActivity(
 ) {
     var expanded by rememberSaveable(block.id) { mutableStateOf(false) }
     var visible by remember(block.id) { mutableIntStateOf(20) }
-    val thinking = block.items.count { it.type == "reasoning" }
-    val tools = block.items.size - thinking
-    val title =
-        listOfNotNull(
-            "Thinking".takeIf { thinking > 0 },
-            "$tools ${if (tools == 1) "tool call" else "tool calls"}".takeIf { tools > 0 },
-        ).joinToString(" · ")
+    val title = activitySummary(block.items)
+    val failed = block.items.any(::activityFailed)
     Surface(
         Modifier.fillMaxWidth().testTag("activity-block"),
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = Color.Transparent,
     ) {
         Column {
             Row(
@@ -100,14 +125,19 @@ fun ConversationActivity(
                     .heightIn(
                         min = 48.dp,
                     ).clickable { expanded = !expanded }
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 4.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (working) {
                     CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
                 } else {
-                    Icon(Icons.Default.Check, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(
+                        if (failed) Icons.Default.ErrorOutline else Icons.Default.Check,
+                        if (failed) "Activity needs review" else null,
+                        Modifier.size(14.dp),
+                        tint = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 Text(
                     title,
@@ -129,11 +159,31 @@ fun ConversationActivity(
                     key(item.id) {
                         var details by rememberSaveable { mutableStateOf(false) }
                         val body = activityText(item)
-                        Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                        Column(Modifier.padding(start = 20.dp, end = 4.dp)) {
                             Row(
                                 Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { details = !details },
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
+                                Icon(
+                                    when (item.type) {
+                                        "commandExecution" -> Icons.Default.Terminal
+                                        "fileChange" -> Icons.Default.EditNote
+                                        "webSearch" -> Icons.Default.Search
+                                        "reasoning" -> Icons.Default.AutoAwesome
+                                        else -> Icons.Default.Build
+                                    },
+                                    null,
+                                    Modifier.padding(end = 8.dp).size(16.dp),
+                                    tint =
+                                        if (activityFailed(
+                                                item,
+                                            )
+                                        ) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                )
                                 Column(Modifier.weight(1f)) {
                                     Text(activityLabel(item), style = MaterialTheme.typography.labelMedium)
                                     if (body.isNotBlank() && !details) {
@@ -153,7 +203,28 @@ fun ConversationActivity(
                                 )
                             }
                             if (details) {
-                                if (body.isNotBlank()) Markdown(body, size = 13f)
+                                if (body.isNotBlank()) {
+                                    if (item.type == "commandExecution") {
+                                        Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(12.dp)) {
+                                            SelectionContainer {
+                                                Text(
+                                                    streamTail(body, 32 * 1024),
+                                                    Modifier.fillMaxWidth().padding(12.dp),
+                                                    fontFamily = FontFamily.Monospace,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                )
+                                            }
+                                        }
+                                        if (body.length > 32 * 1024) {
+                                            Text(
+                                                "Showing the last 32 KiB. Copy includes the full loaded output.",
+                                                style = MaterialTheme.typography.labelSmall,
+                                            )
+                                        }
+                                    } else {
+                                        Markdown(body, size = 14f, selectable = true)
+                                    }
+                                }
                                 if (item.details == null && body.isNotBlank()) TextButton(onClick = { copy(body) }) { Text("Copy") }
                                 item.details?.let { value ->
                                     var raw by remember { mutableStateOf(false) }

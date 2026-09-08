@@ -205,6 +205,7 @@ fun queryAffectedByEvent(
     val group = method.substringBefore('/')
     return when {
         query.method == "ui/home" -> group in setOf("project", "session", "thread", "turn", "serverRequest", "launcher")
+        query.method == "history/list" -> group in setOf("project", "session", "thread", "turn", "launcher")
         query.method == "ui/chats" -> group in setOf("thread", "turn", "serverRequest", "session")
         query.method == "workspace/diff" || query.method.startsWith("fs/") -> group in setOf("fs", "item", "turn")
         query.method.startsWith("thread/") -> group in setOf("thread", "turn", "item", "serverRequest")

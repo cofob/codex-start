@@ -47,7 +47,7 @@ import kotlin.time.Duration.Companion.milliseconds
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 12.dp)) {
                 item {
                     NavigationDrawerItem(label = {
-                        Text("Projects")
+                        Text("Work and projects")
                     }, selected = page == 0, onClick = { navigate(0) }, icon = { Icon(Icons.Default.FolderOpen, null) })
                     NavigationDrawerItem(
                         label = { Text("Remote") },
@@ -89,7 +89,7 @@ import kotlin.time.Duration.Companion.milliseconds
                         )
                     }
                 }
-                items(recent, key = { it.getJSONObject("session").text("profile") + "/" + it.getJSONObject("chat").text("id") }) { item ->
+                items(recent, key = { chatIdentity(it.getJSONObject("session"), it.getJSONObject("chat")) }) { item ->
                     NavigationDrawerItem(label = {
                         Column {
                             Text(
@@ -125,6 +125,24 @@ import kotlin.time.Duration.Companion.milliseconds
     LaunchedEffect(Unit) { searchFocus.requestFocus() }
     KeyboardAction(KeyboardCommand.Search) { searchFocus.requestFocus() }
     var search by rememberSaveable { mutableStateOf("") }
+    val servers by repo.servers.collectAsState()
+    if (repo.supportsHistory(server)) {
+        Column {
+            SearchField(search, { search = it }, "Search all local chats", Modifier.padding(vertical = 16.dp).focusRequester(searchFocus))
+            HostHistoryOverview(
+                repo,
+                server,
+                home,
+                search,
+                servers.any { it.id == server && it.status == "Connected" },
+                open,
+                chooseProject = {},
+                newWork = {},
+                showActions = false,
+            )
+        }
+        return
+    }
     var matches by remember(server) { mutableStateOf<List<RecentChat>>(emptyList()) }
     var busy by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf("") }
@@ -147,7 +165,6 @@ import kotlin.time.Duration.Companion.milliseconds
             matches =
                 coroutineScope {
                     sessions
-                        .take(8)
                         .map { session ->
                             async {
                                 repo.data
@@ -159,6 +176,7 @@ import kotlin.time.Duration.Companion.milliseconds
                                             obj(
                                                 "searchTerm" to search.trim(),
                                                 "limit" to 50,
+                                                "sourceKinds" to chatSources(),
                                             ),
                                         ),
                                     ).optJSONArray("data")

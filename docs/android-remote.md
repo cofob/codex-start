@@ -53,6 +53,73 @@ its first message or New chat. New chat starts a conversation in that workspace.
 The list includes loaded chats that do not yet have a saved turn. The home screen
 also shows recent chats from the selected server.
 
+### All local chats and saved history
+
+Hosts with the `hostHistory` capability add a read-only `history/list` API. Work,
+search, and **All project chats** use this list. It reads the host `.codex`, the
+daemon's `CODEX_HOME` if set, discovered managed homes, and configured home paths.
+It does not require a running codex-start session for each project. Chats from
+Codex CLI, desktop/VS Code, app-server, exec, and agent threads are included.
+
+Search applies on the host before paging. **Load more chats** has no 50- or
+500-chat cutoff. **Archived** selects archived history. Project groups use the
+saved working directory. Different Codex homes can contain separate copies of
+the same thread ID; source and home labels keep those copies distinct. Counts
+in the filter chips cover loaded rows. A pinned chat appears in its own section
+after its page is loaded.
+
+Saved chats open read-only, with selection, copy, and Markdown export. Their
+queue and composer are hidden. They do not acquire a writer or change a running
+desktop task. Use the source app, or its existing connected project session, to
+continue work. Live connected sessions keep their normal queue and write access.
+
+The host preloads its in-memory index. Later reads reuse file metadata and read
+only changed files. SQLite is opened read-only; a failed index read falls back
+to saved JSONL files and reports a notice. Healthy item databases preserve tool
+and reasoning items. Legacy JSONL recovery can show message text only. Missing,
+oversized, or unreadable records are not repaired. The app has no access to
+cloud-only ChatGPT history or the reference app's private pairing service.
+
+The live-session query also requests every supported `sourceKinds` value and
+matches both the host and container working directory. Empty source filters do
+not mean all sources: the [official app-server documentation](https://learn.chatgpt.com/docs/app-server#list-threads-with-pagination--filters)
+specifies an interactive-source default. Loaded-thread pages are followed, and
+project history no longer drops rows after 500 chats.
+
+### Work without an existing project
+
+In **Work**, select **New work**, choose a profile or use the host defaults, then
+select **Start work**. No folder selection is needed. The host creates a separate
+Git project at `~/Documents/Codex/work-<UUID>` and opens its session. The first
+message starts the Codex thread in that session's working directory. Files, Git,
+and terminal controls use this project. **Use a project** keeps the existing flow.
+
+`~` is the home directory of the account that runs the host daemon, not Android's
+home directory. Each new Work action gets a different folder. Retrying the same
+action keeps its folder and files. Closing an unused work chat does not delete
+its project. Work folders also appear in Projects.
+
+This requires the updated host capability `workProjects`. Older hosts keep
+project access and show an update message. Update both the APK and the host
+binary, then restart the daemon when its running tasks can be interrupted.
+
+The authenticated `project/createWork` request takes a stable UUID `workId` and
+returns a `ProjectInfo`. The host resolves the path; the client cannot supply an
+arbitrary creation path. Existing unregistered directories and symbolic-link
+replacements are rejected. Successful creation publishes `project/changed`.
+Opening the same project/profile is serialized to prevent duplicate startup
+during a retry; other project/profile pairs can start independently.
+
+The USB acceptance test uses temporary host folders, the real Codex app-server,
+and a loopback-only test model:
+
+```bash
+python3 scripts/test-android-navigation.py --serial DEVICE --work-fixture --queue-fixture \
+  --test-class wtf.fob.cs.workspace.NewWorkTest --screenshots /tmp/projectless-work
+```
+
+### Chat navigation
+
 Chat, Changes, and Files use bottom navigation on phones and a side rail on wide
 screens. Settings also has Advanced session controls for environment selection,
 session restart, and logs. The app guide can be opened again from Settings.
@@ -101,6 +168,10 @@ Use **Close terminal** to stop a shell and its foreground program. Device revoca
 also closes that device's terminals. A daemon restart closes terminals; it does not
 restore their processes or output. Older daemons retain the single-terminal screen
 and show an update notice. That legacy screen closes its shell when you leave it.
+
+The Work overview and remote task states also use a supplied Android APK as a
+design reference. See the [reference audit](android-reference-audit.md) for evidence,
+scope, and limits. This does not add ChatGPT cloud access or private mobile pairing.
 
 The session list and extra-key design use Termux as a reference. No Termux source
 is included in the app. The local reference clone is separate from this repository.
@@ -243,9 +314,16 @@ python3 scripts/test-android-navigation.py --serial DEVICE \
 ### Chat activity, text selection, and queue
 
 Consecutive thinking and tool calls share one compact, collapsed activity block.
-Expand it to see each item, its output, and optional raw details. Agent answers
-have a copy button and a **Select text** control. A long press also opens text
-selection. Selection uses a separate native view so normal chat scrolling works.
+Expand it to see each item, live output, and optional raw details. Agent answers
+have a Copy button and a More menu with **Select text** and **Copy Markdown**.
+Touch and hold an answer to select text directly with Android handles. Ordinary
+swipes scroll the chat. A short tap on a link opens it; a long press selects text.
+The separate selection sheet remains available from More.
+
+Stream updates are grouped in short batches, and Markdown is parsed off the UI
+thread. While text is selected, visible updates and automatic scrolling pause.
+Received text appears when selection ends. Command output uses literal monospace
+text, so Markdown characters in logs do not change their appearance.
 
 The queue is visible above the message box. It supports adding, editing, moving,
 removing, and sending a selected message now. Edits retain attached input. Drafts

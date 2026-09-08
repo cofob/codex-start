@@ -5,6 +5,7 @@ import http.server
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -18,6 +19,8 @@ parser.add_argument("--codex", default=shutil.which("codex"), help="local Codex 
 parser.add_argument("--screenshots", type=pathlib.Path)
 parser.add_argument("--test-class", default="wtf.fob.cs.navigation.NavigationTest", help="instrumentation test to run against the isolated app-server")
 parser.add_argument("--queue-fixture", action="store_true", help="use a loopback-only fake model for queue and interrupt tests")
+parser.add_argument("--work-fixture", action="store_true", help="prepare isolated work projects and profile sessions")
+parser.add_argument("--history-fixture", action="store_true", help="prepare local saved histories from multiple clients and homes")
 parser.add_argument("--container-fixture", action="store_true", help="run terminal tests in an isolated offline Docker container")
 args = parser.parse_args()
 if not args.codex:
@@ -25,7 +28,7 @@ if not args.codex:
 sdk = pathlib.Path(os.environ.get("ANDROID_SDK_ROOT", pathlib.Path.home() / "Library/Android/sdk"))
 adb = [str(sdk / "platform-tools/adb"), "-s", args.serial]
 package = "wtf.fob.cs"
-stages = ("projects", "settings", "settings-dark", "drawer", "configure", "chats", "new-chat", "read-only", "launcher-settings", "queue", "activity", "selection", "terminal-vim", "terminal-tabs", "terminal-keyboard", "failure")
+stages = ("work", "projects", "settings", "settings-dark", "drawer", "configure", "chats", "new-chat", "new-work", "work-chat", "read-only", "launcher-settings", "queue", "activity", "selection", "terminal-vim", "terminal-tabs", "terminal-keyboard", "chat-compact", "workspace-menu", "diff-compact", "files-compact", "terminal-compact", "failure")
 
 
 class QueueModel(http.server.BaseHTTPRequestHandler):
@@ -62,6 +65,10 @@ with tempfile.TemporaryDirectory(prefix="cs-navigation-", dir="/tmp") as tempora
     directory = pathlib.Path(temporary)
     log = (directory / "gateway.log").open("w+")
     env = dict(os.environ, CODEX_START_ANDROID_FIXTURE=temporary, CODEX_START_TEST_CODEX=args.codex)
+    if args.work_fixture:
+        env["CODEX_START_WORK_FIXTURE"] = "1"
+    if args.history_fixture:
+        env["CODEX_START_HISTORY_FIXTURE"] = "1"
     model = None
     if args.queue_fixture:
         model = http.server.ThreadingHTTPServer(("127.0.0.1", 0), QueueModel)
@@ -102,7 +109,7 @@ with tempfile.TemporaryDirectory(prefix="cs-navigation-", dir="/tmp") as tempora
             failure = subprocess.run(adb + ["exec-out", "run-as", package, "cat", "files/navigation-failure.txt"], capture_output=True, timeout=30)
             if failure.returncode == 0:
                 (args.screenshots / "failure.txt").write_bytes(failure.stdout)
-        if result.returncode or "OK (1 test)" not in result.stdout:
+        if result.returncode or not re.search(r"^OK \([1-9][0-9]* tests?\)$", result.stdout, re.MULTILINE):
             raise RuntimeError("Navigation acceptance failed")
     finally:
         if model:

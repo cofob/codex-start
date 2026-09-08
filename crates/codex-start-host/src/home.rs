@@ -540,10 +540,26 @@ fn read_rollout_thread(
     target_root: &Path,
     managed: bool,
 ) -> Result<Option<ThreadRecord>> {
+    read_rollout_thread_bounded(
+        source_path,
+        target_path,
+        target_root,
+        managed,
+        ROLLOUT_INDEX_READ_LIMIT,
+    )
+}
+
+fn read_rollout_thread_bounded(
+    source_path: &Path,
+    target_path: &Path,
+    target_root: &Path,
+    managed: bool,
+    limit: u64,
+) -> Result<Option<ThreadRecord>> {
     let mut bytes = Vec::new();
     File::open(target_path)
         .map_err(|error| HostError::io(target_path, error))?
-        .take(ROLLOUT_INDEX_READ_LIMIT)
+        .take(limit)
         .read_to_end(&mut bytes)
         .map_err(|error| HostError::io(target_path, error))?;
     let mut values = bytes
@@ -629,6 +645,20 @@ fn read_rollout_thread(
         model: details.model.filter(|value| !value.is_empty()),
         reasoning_effort: details.reasoning_effort.filter(|value| !value.is_empty()),
         thread_source: json_database_value(&payload["thread_source"]),
+    }))
+}
+
+/// Read saved metadata without opening or repairing a Codex database.
+pub(crate) fn history_summary(path: &Path, root: &Path) -> Result<Option<serde_json::Value>> {
+    Ok(read_rollout_thread_bounded(path, path, root, false, 256 * 1024)?.map(|thread| {
+        serde_json::json!({
+            "id":thread.id,"cwd":thread.cwd,"createdAt":thread.created_at,
+            "updatedAt":thread.updated_at,"source":serde_json::from_str::<serde_json::Value>(&thread.source)
+                .unwrap_or(serde_json::Value::String(thread.source)),
+            "preview":thread.preview.chars().take(320).collect::<String>(),
+            "archived":thread.archived,"status":{"type":"notLoaded"},
+            "historyMode":thread.history_mode,"turns":[]
+        })
     }))
 }
 
@@ -1047,7 +1077,7 @@ fn latest_state_database(root: &Path) -> Result<Option<PathBuf>> {
     latest_versioned_database(root, "state_")
 }
 
-fn latest_versioned_database(root: &Path, prefix: &str) -> Result<Option<PathBuf>> {
+pub(crate) fn latest_versioned_database(root: &Path, prefix: &str) -> Result<Option<PathBuf>> {
     let mut candidates = Vec::new();
     for entry in fs::read_dir(root).map_err(|error| HostError::io(root, error))? {
         let entry = entry.map_err(|error| HostError::io(root, error))?;

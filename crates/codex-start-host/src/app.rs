@@ -125,6 +125,7 @@ async fn dispatch_command(cli: Cli, context: ConfigContext, output: OutputFormat
         Some(Command::Resources(args)) => {
             execute_resources(&context, args.runtime, args.command, output)
         }
+        Some(Command::Cache(args)) => execute_cache(&context, &args, output),
         Some(Command::Env(args)) => execute_environment(&context, args.command, output),
         Some(Command::Home(args)) => execute_home(&context, args.command, output).await,
         Some(Command::Session(args)) => match args.command {
@@ -396,6 +397,8 @@ fn legacy_run_options(options: &LegacyOptions) -> RunOptions {
         worktree: options.worktree,
         publish: options.publish.clone(),
         no_tty: false,
+        tmux: options.tmux,
+        no_tmux: options.no_tmux,
         dry_run: false,
         persistent: false,
         ephemeral: false,
@@ -412,6 +415,13 @@ fn legacy_run_options(options: &LegacyOptions) -> RunOptions {
 }
 
 fn merge_legacy_run_options(options: &mut RunOptions, legacy: &LegacyOptions) -> Result<()> {
+    if (options.tmux || legacy.tmux) && (options.no_tmux || legacy.no_tmux) {
+        return Err(HostError::Usage(
+            "--tmux conflicts with --no-tmux".to_owned(),
+        ));
+    }
+    options.tmux |= legacy.tmux;
+    options.no_tmux |= legacy.no_tmux;
     if let Some(name) = &legacy.name {
         if options.name.is_some() {
             return Err(HostError::Usage(
@@ -874,6 +884,8 @@ fn merge_run_args(environment: Option<String>, options: MergeRunOptions) -> RunA
             rebuild: options.rebuild,
             pull: options.pull,
             no_tty: options.no_tty,
+            tmux: false,
+            no_tmux: true,
             dry_run: options.dry_run,
             persistent: false,
             ephemeral: true,
@@ -1002,6 +1014,8 @@ async fn execute_run(
         }
         args.options.persistent = false;
         args.options.ephemeral = true;
+        args.options.tmux = false;
+        args.options.no_tmux = true;
         let store = SessionStore::for_context(context)?;
         let session = store.read(session_id)?;
         if session.kind == SessionKind::Interactive {
@@ -1043,20 +1057,19 @@ async fn execute_run(
         }
         return result;
     }
+    let mut launch = resolve_run(context, &args, kind)?;
     // An explicitly started daemon opts new interactive launches into a shared socket.
     #[cfg(unix)]
     let remote_session = kind == RunKind::Codex
         && args.codex_args.is_empty()
+        && !launch.config.tmux
         && !args.options.ephemeral
         && !args.options.dry_run
         && crate::remote::registry::enabled_for(&context.global_file).await;
     #[cfg(unix)]
     if remote_session {
         args.options.persistent = true;
-    }
-    let mut launch = resolve_run(context, &args, kind)?;
-    #[cfg(unix)]
-    if remote_session {
+        launch.config.sessions.enabled = true;
         launch.config.sessions.on_tui_exit = codex_start_core::SessionExitBehavior::Detach;
     }
     if args.options.dry_run
@@ -1534,6 +1547,27 @@ fn resolve_run_with_config(
     kind: RunKind,
     mut config: EffectiveConfig,
 ) -> Result<ResolvedRun> {
+    if args.options.tmux && (kind != RunKind::Codex || args.options.persistent) {
+        return Err(HostError::Usage(
+            "--tmux requires a foreground Codex run; it cannot be used with shell or persistent sessions"
+                .to_owned(),
+        ));
+    }
+    if kind != RunKind::Codex || args.options.persistent {
+        config.tmux = false;
+    }
+    if config.tmux {
+        if args.options.no_tty || config.tty == TtyMode::Never {
+            return Err(HostError::Usage("--tmux requires a terminal".to_owned()));
+        }
+        if !args.options.dry_run && !tty_enabled(config.tty) {
+            return Err(HostError::Usage(
+                "--tmux requires terminal input and output".to_owned(),
+            ));
+        }
+        config.tty = TtyMode::Always;
+        config.sessions.enabled = false;
+    }
     if kind == RunKind::Adapter {
         crate::adapter::configure(&mut config, &context.cwd)?;
     }
@@ -1571,7 +1605,10 @@ fn resolve_run_with_config(
             .mcp_oauth_callback(config.forwarding.oauth_callback_port, &overrides)
             .map_err(|error| HostError::Config(error.to_string()))?
     };
-    let raw_command = workload_command(&config, kind, &args.codex_args, &oauth_callback);
+    let mut raw_command = workload_command(&config, kind, &args.codex_args, &oauth_callback);
+    if config.tmux {
+        raw_command = tmux_command(&raw_command)?;
+    }
     Ok(ResolvedRun {
         adapter: kind == RunKind::Adapter,
         config,
@@ -1627,6 +1664,14 @@ fn prepare_runtime_run(
         host_runtime(launch.config.runtime),
         args.options.runtime_program.as_deref().map(Path::as_os_str),
     )?;
+    if launch.config.tmux
+        && !launch.config.rebuild
+        && !args.options.rebuild
+        && !args.options.pull
+        && let Some(status) = attach_existing_tmux(context, &runtime, launch)?
+    {
+        return Ok(RuntimeRunOutcome::Attached(status));
+    }
     let workload_identity = WorkloadIdentity::detect()?;
     if kind == RunKind::Shell
         && launch.config.name.is_none()
@@ -1749,6 +1794,71 @@ fn prepare_runtime_run(
         run_name,
         labels,
     })))
+}
+
+fn attach_existing_tmux(
+    context: &ConfigContext,
+    runtime: &Runtime,
+    launch: &ResolvedRun,
+) -> Result<Option<u8>> {
+    let user = launch.environment.user.as_deref().unwrap_or("codex");
+    let selected_container = launch.config.name.as_ref().map(|name| {
+        container_name(
+            &launch.environment.name,
+            context
+                .repo
+                .as_ref()
+                .map_or("directory", |repo| repo.project_name.as_str()),
+            &launch.project_id,
+            name,
+        )
+    });
+    let names = if let Some(name) = selected_container.as_ref() {
+        if runtime.container_state(name)? != Some(true) {
+            return Ok(None);
+        }
+        require_compatible_workload(runtime, name, launch)?;
+        vec![name.clone()]
+    } else {
+        let rows = runtime.list_containers(&format!("{MANAGED_LABEL}=true"), false)?;
+        container_names(&rows.stdout_text())
+            .into_iter()
+            .filter(|name| require_compatible_workload(runtime, name, launch).is_ok())
+            .collect()
+    };
+    let probe = ["tmux", "-L", "codex-start", "has-session", "-t", "=codex"].map(OsString::from);
+    let mut candidates = Vec::new();
+    for name in names {
+        if runtime.exec_probe_as_user(&name, user, &probe)? {
+            candidates.push(name);
+        }
+    }
+    match candidates.as_slice() {
+        [] if selected_container.is_some() => Err(HostError::Runtime(format!(
+            "container {} is running but has no accessible codex-start tmux session",
+            selected_container.unwrap_or_default()
+        ))),
+        [] => Ok(None),
+        [name] => {
+            tracing::info!(container = name, "attaching to existing tmux session");
+            let command = [
+                "tmux",
+                "-L",
+                "codex-start",
+                "attach-session",
+                "-t",
+                "=codex",
+            ]
+            .map(OsString::from);
+            runtime
+                .exec_as_user(name, None, &command, true, Some(user))
+                .map(Some)
+        }
+        _ => Err(HostError::Usage(format!(
+            "multiple running tmux sessions match this project ({}); select one with --name",
+            candidates.join(", ")
+        ))),
+    }
 }
 
 fn attach_unambiguous_shell(
@@ -3031,7 +3141,7 @@ fn base_workload_environment(
     project_root: &Path,
 ) -> BTreeMap<String, OsString> {
     let user = environment.user.as_deref().unwrap_or("codex");
-    BTreeMap::from([
+    let mut env = BTreeMap::from([
         ("HOME".to_owned(), OsString::from("/home/codex")),
         ("USER".to_owned(), OsString::from(user)),
         ("LOGNAME".to_owned(), OsString::from(user)),
@@ -3064,7 +3174,9 @@ fn base_workload_environment(
             "GIT_CONFIG_VALUE_1".to_owned(),
             project_root.as_os_str().to_owned(),
         ),
-    ])
+    ]);
+    env.extend(crate::runtime::terminal_environment());
+    env
 }
 
 fn insert_proxy_environment(env: &mut BTreeMap<String, OsString>, proxy_url: &str) {
@@ -3356,6 +3468,104 @@ fn execute_resources(
         }
         ResourcesCommand::Cleanup { force } => cleanup_resources(context, &runtime, force, output),
     }
+}
+
+fn execute_cache(
+    context: &ConfigContext,
+    args: &crate::cli::CacheArgs,
+    output: OutputFormat,
+) -> Result<u8> {
+    use crate::cli::CacheCommand;
+    use std::fmt::Write as _;
+
+    let config = context.resolve(None)?.config;
+    let runtime = Runtime::detect(
+        args.runtime.unwrap_or_else(|| host_runtime(config.runtime)),
+        args.runtime_program.as_deref().map(Path::as_os_str),
+    )?;
+    let mut volumes = Vec::new();
+    let mut unowned_skipped = Vec::new();
+    for name in runtime.list_volume_names("cs.fob.wtf.role=cache")? {
+        if runtime.volume_label(&name, MANAGED_LABEL)?.as_deref() != Some("true")
+            || runtime.volume_label(&name, "cs.fob.wtf.role")?.as_deref() != Some("cache")
+        {
+            unowned_skipped.push(name);
+            continue;
+        }
+        let in_use = runtime.volume_in_use(&name)?;
+        volumes.push((name, in_use));
+    }
+    if matches!(args.command, CacheCommand::List) {
+        let rows = volumes
+            .iter()
+            .map(|(name, in_use)| serde_json::json!({"name": name, "in_use": in_use}))
+            .collect::<Vec<_>>();
+        let human = if volumes.is_empty() {
+            "No owned cache volumes.".to_owned()
+        } else {
+            volumes
+                .iter()
+                .map(|(name, in_use)| {
+                    format!("{name}\t{}", if *in_use { "in use" } else { "unused" })
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        emit(
+            output,
+            &serde_json::json!({"volumes": rows, "unowned_skipped": unowned_skipped}),
+            &human,
+        )?;
+        return Ok(0);
+    }
+    let dry_run = matches!(args.command, CacheCommand::Cleanup { dry_run: true });
+    let mut removed = Vec::new();
+    let mut would_remove = Vec::new();
+    let mut in_use_skipped = Vec::new();
+    let mut errors = Vec::new();
+    for (name, in_use) in volumes {
+        if in_use {
+            in_use_skipped.push(name);
+        } else if dry_run {
+            would_remove.push(name);
+        } else {
+            // The engine also rejects removal if a container attaches after the probe.
+            match runtime.remove_volume(&name, false) {
+                Ok(()) => removed.push(name),
+                Err(error) => {
+                    errors.push(serde_json::json!({"name": name, "error": error.to_string()}));
+                }
+            }
+        }
+    }
+    let selected = if dry_run { &would_remove } else { &removed };
+    let action = if dry_run { "Would remove" } else { "Removed" };
+    let mut human = format!(
+        "{action} {} cache volumes; skipped {} in use and {} without matching ownership; {} removal errors.",
+        selected.len(),
+        in_use_skipped.len(),
+        unowned_skipped.len(),
+        errors.len()
+    );
+    for name in selected {
+        let _ = write!(human, "\n{name}");
+    }
+    for error in &errors {
+        let _ = write!(human, "\n{}: {}", error["name"], error["error"]);
+    }
+    emit(
+        output,
+        &serde_json::json!({
+            "dry_run": dry_run,
+            "removed": removed,
+            "would_remove": would_remove,
+            "in_use_skipped": in_use_skipped,
+            "unowned_skipped": unowned_skipped,
+            "errors": errors,
+        }),
+        &human,
+    )?;
+    Ok(u8::from(!errors.is_empty()))
 }
 
 fn cleanup_resources(
@@ -4045,6 +4255,54 @@ fn workload_command(
     command
 }
 
+/// Quote one shell command so tmux cannot parse user arguments as commands.
+fn tmux_command(command: &[OsString]) -> Result<Vec<OsString>> {
+    if command
+        .iter()
+        .any(|argument| argument.as_encoded_bytes().contains(&0))
+    {
+        return Err(HostError::Usage(
+            "tmux arguments cannot contain NUL bytes".to_owned(),
+        ));
+    }
+    let mut shell_command = b"exec".to_vec();
+    for argument in command {
+        shell_command.extend_from_slice(b" '");
+        for byte in argument.as_encoded_bytes() {
+            if *byte == b'\'' {
+                shell_command.extend_from_slice(b"'\\''");
+            } else {
+                shell_command.push(*byte);
+            }
+        }
+        shell_command.push(b'\'');
+    }
+    #[cfg(unix)]
+    let shell_command = {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(shell_command)
+    };
+    #[cfg(not(unix))]
+    let shell_command = OsString::from(String::from_utf8(shell_command).map_err(|_| {
+        HostError::Usage("tmux arguments must contain valid Unicode on this platform".to_owned())
+    })?);
+    Ok([
+        "tmux",
+        "-L",
+        "codex-start",
+        "new-session",
+        "-s",
+        "codex",
+        "-n",
+        "codex",
+        "--",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .chain(std::iter::once(shell_command))
+    .collect())
+}
+
 fn native_codex_override_expressions(
     configured_args: &[String],
     raw_args: &[OsString],
@@ -4665,6 +4923,36 @@ mod tests {
     use crate::runtime::{MountKind, MountRequest, PublishRequest};
 
     #[test]
+    #[cfg(unix)]
+    fn tmux_shell_command_preserves_argument_bytes_without_expansion() {
+        use std::os::unix::ffi::OsStringExt;
+        let arguments = vec![
+            OsString::from(""),
+            OsString::from("spaces and 'quotes'\n\"double quotes\""),
+            OsString::from("$HOME $(exit 91) `exit 92` ;"),
+            OsString::from(";"),
+            OsString::from("\\;"),
+            OsString::from_vec(vec![b'x', 0xff]),
+        ];
+        let command = [OsString::from("printf"), OsString::from("%s\\0")]
+            .into_iter()
+            .chain(arguments.iter().cloned())
+            .collect::<Vec<_>>();
+        let wrapped = super::tmux_command(&command).expect("tmux wrapper");
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(wrapped.last().expect("shell command"))
+            .output()
+            .expect("execute shell command");
+        assert!(output.status.success());
+        let expected = arguments
+            .iter()
+            .flat_map(|argument| argument.as_encoded_bytes().iter().copied().chain([0]))
+            .collect::<Vec<_>>();
+        assert_eq!(output.stdout, expected);
+    }
+
+    #[test]
     fn adapter_detects_app_server_after_global_codex_options() {
         assert!(codex_app_server_requested(&[]));
         assert!(codex_app_server_requested(&[
@@ -5048,6 +5336,7 @@ mod tests {
             publish: Vec::new(),
             rebuild: false,
             tty: TtyMode::Auto,
+            tmux: false,
             workdir: None,
             allow_hosts: Vec::new(),
             allow_ssh_hosts: Vec::new(),

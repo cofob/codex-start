@@ -390,11 +390,16 @@ fun CodexApp(
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 val wide = maxWidth >= 600.dp
                 val compactHeight = maxHeight < 480.dp
-                val keyboardVisible = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current) > 0
                 AppScreenHost(navigation) { screenEntry ->
                     val level = screenEntry.arguments?.getInt("page") ?: 0
                     val chatTab by screenEntry.savedStateHandle.getStateFlow(CHAT_TAB, 2).collectAsState()
-                    val screenPage = if (level == 2) chatTab else level
+                    val savedHistory = session?.text("kind") == "history"
+                    val screenPage =
+                        if (level == 2) {
+                            if (savedHistory) 2 else chatTab
+                        } else {
+                            level
+                        }
                     val screenFeature = FeaturePage.valueOf(screenEntry.arguments?.getString("feature") ?: FeaturePage.Plugins.name)
                     val tabStates =
                         androidx.compose.runtime.saveable
@@ -482,7 +487,26 @@ fun CodexApp(
                                     }
                                 }
                             }, actions = {
-                                IconButton(onClick = { keyboardHelp = true }) { Icon(Icons.Default.Keyboard, "Keyboard shortcuts") }
+                                if (!savedHistory &&
+                                    session != null &&
+                                    (inChat || screenPage == 9) &&
+                                    (!wide || compactHeight || screenPage == 9)
+                                ) {
+                                    WorkspaceViewMenu(
+                                        page = screenPage,
+                                        terminals = selected?.capabilities?.contains("terminals") == true,
+                                        navigate = { destination ->
+                                            if (inChat && destination in 2..4) {
+                                                screenEntry.savedStateHandle[CHAT_TAB] = destination
+                                            } else {
+                                                navigate(destination)
+                                            }
+                                        },
+                                        keyboardHelp = { keyboardHelp = true },
+                                    )
+                                } else {
+                                    IconButton(onClick = { keyboardHelp = true }) { Icon(Icons.Default.Keyboard, "Keyboard shortcuts") }
+                                }
                                 if (servers.isNotEmpty()) {
                                     IconButton(
                                         onClick = { switcher = true },
@@ -492,36 +516,9 @@ fun CodexApp(
                             }, expandedHeight = if (compactHeight) 48.dp else 64.dp)
                         },
                         snackbarHost = { SnackbarHost(snackbar) },
-                        bottomBar = {
-                            if (inChat &&
-                                !keyboardVisible &&
-                                compactHeight
-                            ) {
-                                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                                    chatLabels.forEachIndexed { index, label ->
-                                        SegmentedButton(
-                                            selected = screenPage == index + 2,
-                                            onClick = { screenEntry.savedStateHandle[CHAT_TAB] = index + 2 },
-                                            shape = SegmentedButtonDefaults.itemShape(index, chatLabels.size),
-                                            icon = {},
-                                            label = { Text(label, maxLines = 1) },
-                                        )
-                                    }
-                                }
-                            } else if (inChat && !wide && !keyboardVisible) {
-                                NavigationBar {
-                                    chatLabels.forEachIndexed { index, label ->
-                                        NavigationBarItem(selected = screenPage == index + 2, onClick = {
-                                            screenEntry.savedStateHandle[CHAT_TAB] =
-                                                index + 2
-                                        }, icon = { Icon(chatIcons[index], label) }, label = { Text(label) })
-                                    }
-                                }
-                            }
-                        },
                     ) { padding ->
                         Row(Modifier.padding(padding).fillMaxSize()) {
-                            if (inChat && wide && !compactHeight) {
+                            if (inChat && !savedHistory && wide && !compactHeight) {
                                 NavigationRail {
                                     chatLabels.forEachIndexed { index, label ->
                                         NavigationRailItem(selected = screenPage == index + 2, onClick = {
@@ -535,29 +532,29 @@ fun CodexApp(
                                 if (selected != null &&
                                     selected.status != "Connected"
                                 ) {
-                                    Text(
-                                        if (selected.status ==
-                                            "Connecting"
-                                        ) {
-                                            "Connecting to ${selected.name}…"
-                                        } else {
-                                            "${selected.name}: ${selected.status}. Retrying…"
-                                        },
-                                        Modifier.padding(vertical = 8.dp),
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
+                                    ConnectionNotice(selected, { repo.retryConnection(selected.id) }, { navigate(5) })
                                 }
                                 if (pendingTask != null) LinearProgressIndicator(Modifier.fillMaxWidth())
                                 if (screenPage == 0 &&
                                     servers.isNotEmpty()
                                 ) {
-                                    androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    val hostList =
+                                        androidx.compose.foundation.lazy
+                                            .rememberLazyListState()
+                                    LaunchedEffect(server, servers.map { it.id }) {
+                                        val index = servers.indexOfFirst { it.id == server }
+                                        if (index >= 0) hostList.animateScrollToItem(index + 1)
+                                    }
+                                    androidx.compose.foundation.lazy.LazyRow(
+                                        state = hostList,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
                                         item {
                                             AssistChip(onClick = {
                                                 switcher = true
                                             }, label = {
                                                 Text(
-                                                    "All servers",
+                                                    "Servers",
                                                 )
                                             }, leadingIcon = { Icon(Icons.Default.Dns, null, Modifier.size(16.dp)) })
                                         }

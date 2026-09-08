@@ -42,6 +42,13 @@ pub async fn run(root: PathBuf, config: Option<PathBuf>, mut options: DaemonOpti
         .route("/v1/ws", get(upgrade))
         .with_state(state.clone());
     let monitor = tokio::spawn(super::sessions::monitor(state.clone()));
+    // Build the read-only index while the phone connects. Subsequent pages reuse it.
+    let history_state = state.clone();
+    tokio::spawn(async move {
+        if let Err(failure) = super::history::list(&history_state, json!({"limit":1})).await {
+            tracing::warn!(%failure, "local history preload failed");
+        }
+    });
     let terminal_monitor = tokio::spawn(super::terminals::monitor(state.clone()));
     let admin = tokio::spawn(admin_loop(control, state.clone()));
     let overlay = if state.options.no_yggdrasil {
@@ -333,6 +340,7 @@ async fn dispatch_recorded(
             | "task/active/list"
             | "device/list"
             | "project/list"
+            | "history/list"
             | "directory/list"
             | "transport/peers"
             | "launcher/list"
@@ -358,7 +366,7 @@ async fn dispatch_recorded(
     state.db(|s| s.finish_request(device, id, &recorded_outcome))?;
     if outcome["status"] == "completed" {
         let notification = match method {
-            "project/add" | "project/open" => Some("project/changed"),
+            "project/add" | "project/open" | "project/createWork" => Some("project/changed"),
             "session/create" | "session/stop" | "session/restart" => Some("session/changed"),
             "device/revoke" => Some("device/changed"),
             "connectionPassword/rotate" => Some("connectionPassword/changed"),
@@ -390,6 +398,16 @@ fn decode_outcome(outcome: &Value) -> Result<Value> {
 }
 
 pub(super) async fn codex_rpc(state: &Arc<State>, params: &Value) -> Result<Value> {
+    let session = params["sessionId"].as_str().unwrap_or_default();
+    if session.starts_with("history-") {
+        return super::history::rpc(
+            state,
+            session,
+            params["method"].as_str().unwrap_or_default(),
+            &params["params"],
+        )
+        .await;
+    }
     let backend =
         super::sessions::get(state, params["sessionId"].as_str().unwrap_or_default()).await?;
     let method = params["method"]
@@ -441,8 +459,16 @@ async fn dispatch(
             super::settings::dispatch(state, method, &params).await
         }
         "project/list" => super::projects::list(state).await,
+        "history/list" => super::history::list(state, params).await,
         "project/add" => super::projects::add(state, params["path"].as_str().unwrap_or_default())
             .map(|project| json!(project)),
+        "project/createWork" => {
+            super::projects::create_work_remote(
+                state,
+                params["workId"].as_str().unwrap_or_default(),
+            )
+            .await
+        }
         "project/open" => {
             super::projects::open(
                 state,
@@ -642,13 +668,8 @@ mod tests {
         server.abort();
     }
 
-    #[tokio::test]
-    #[ignore = "started by scripts/test-android-navigation.py with a local Codex binary"]
-    async fn android_navigation_fixture() {
-        let directory = PathBuf::from(std::env::var_os("CODEX_START_ANDROID_FIXTURE").unwrap());
-        let codex = std::env::var("CODEX_START_TEST_CODEX").unwrap();
-        let (root, state, server) = gateway().await;
-        let project_path = root.path().join("Navigation project");
+    fn navigation_project(root: &std::path::Path) -> PathBuf {
+        let project_path = root.join("Navigation project");
         std::fs::create_dir_all(project_path.join("Nested folder")).unwrap();
         let project_path = std::fs::canonicalize(project_path).unwrap();
         std::fs::write(project_path.join("demo.txt"), "old\n").unwrap();
@@ -666,6 +687,69 @@ mod tests {
                     .success()
             );
         }
+        project_path
+    }
+
+    async fn prepare_work_fixture(
+        state: &Arc<State>,
+        codex: &str,
+        socket: &std::path::Path,
+        session: &codex_start_remote::SessionInfo,
+    ) -> Value {
+        let mut work_fixture = json!({});
+        if std::env::var_os("CODEX_START_WORK_FIXTURE").is_some() {
+            std::fs::write(
+                state.config.as_ref().unwrap(),
+                "[profiles.work.settings]\nnetwork='offline'\n",
+            )
+            .unwrap();
+            let work_id = uuid::Uuid::new_v4().to_string();
+            let project = super::super::projects::create_work(state, &work_id).unwrap();
+            for profile in [None, Some("work")] {
+                let info = codex_start_remote::SessionInfo {
+                    id: codex_start_remote::SessionId::generate(),
+                    name: "Work fixture".into(),
+                    cwd: project.path.clone(),
+                    execution_cwd: project.path.clone(),
+                    profile: profile.map(str::to_owned),
+                    ..session.clone()
+                };
+                if profile.is_some() {
+                    work_fixture["sessionId"] = json!(info.id);
+                }
+                super::super::sessions::connect_fixture(
+                    state,
+                    codex_start_remote::SessionEndpoint {
+                        info,
+                        program: codex.to_owned(),
+                        args: vec![
+                            "app-server".into(),
+                            "proxy".into(),
+                            "--sock".into(),
+                            socket.to_string_lossy().into(),
+                        ],
+                        owner_pid: None,
+                    },
+                )
+                .await;
+            }
+            work_fixture["workId"] = json!(work_id);
+            work_fixture["project"] = json!(project);
+            work_fixture["root"] = json!(std::fs::canonicalize(&state.work_directory).unwrap());
+        }
+        work_fixture
+    }
+
+    #[tokio::test]
+    #[ignore = "started by scripts/test-android-navigation.py with a local Codex binary"]
+    async fn android_navigation_fixture() {
+        let directory = PathBuf::from(std::env::var_os("CODEX_START_ANDROID_FIXTURE").unwrap());
+        let codex = std::env::var("CODEX_START_TEST_CODEX").unwrap();
+        let (root, state, server) = gateway().await;
+        if std::env::var_os("CODEX_START_HISTORY_FIXTURE").is_some() {
+            super::super::history::prepare_fixture(&state.root);
+        }
+        let project_path = navigation_project(root.path());
         let codex_home = root.path().join("codex-home");
         std::fs::create_dir(&codex_home).unwrap();
         if let Ok(url) = std::env::var("CODEX_START_TEST_MODEL_URL") {
@@ -714,7 +798,7 @@ mod tests {
             &state,
             codex_start_remote::SessionEndpoint {
                 info: session.clone(),
-                program: codex,
+                program: codex.clone(),
                 args: vec![
                     "app-server".into(),
                     "proxy".into(),
@@ -740,12 +824,13 @@ mod tests {
             .await
             .unwrap();
         super::super::projects::add(&state, project_path.to_str().unwrap()).unwrap();
+        let work_fixture = prepare_work_fixture(&state, &codex, &socket, &session).await;
         let invitation = state
             .invitation(Some("127.0.0.1".into()))
             .unwrap()
             .encode()
             .unwrap();
-        atomic_write(&directory.join("connection.json"), &json!({"invitation":invitation,"port":state.options.bind.port(),"daemonId":state.discovery.daemon_id,"hostname":state.discovery.name,"home":std::env::var("HOME").unwrap(),"sessionId":session.id,"projectPath":project_path,"threadId":chat["thread"]["id"]}).to_string()).unwrap();
+        atomic_write(&directory.join("connection.json"), &json!({"invitation":invitation,"port":state.options.bind.port(),"daemonId":state.discovery.daemon_id,"hostname":state.discovery.name,"home":std::env::var("HOME").unwrap(),"sessionId":session.id,"projectPath":project_path,"threadId":chat["thread"]["id"],"work":work_fixture}).to_string()).unwrap();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
         while !directory.join("stop").exists() && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(100)).await;

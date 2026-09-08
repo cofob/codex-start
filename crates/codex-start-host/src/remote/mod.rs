@@ -13,6 +13,8 @@ mod output;
 #[cfg(unix)]
 mod projects;
 #[cfg(unix)]
+mod history;
+#[cfg(unix)]
 pub(crate) mod registry;
 #[cfg(unix)]
 mod server;

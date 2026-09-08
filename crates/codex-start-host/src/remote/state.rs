@@ -27,6 +27,12 @@ pub struct State {
     pub connections: Arc<tokio::sync::Semaphore>,
     pub sessions: tokio::sync::Mutex<super::sessions::Sessions>,
     pub settings_edits: tokio::sync::Mutex<()>,
+    pub work_directory: PathBuf,
+    pub work_projects: Mutex<()>,
+    pub history: Arc<Mutex<super::history::History>>,
+    pub project_opens: tokio::sync::Mutex<
+        std::collections::BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+    >,
     pub terminals: tokio::sync::Mutex<super::terminals::Terminals>,
     pub overlay_status: Mutex<String>,
     pub overlay: Mutex<Option<std::sync::Weak<codex_start_transport::overlay::Overlay>>>,
@@ -71,6 +77,14 @@ impl State {
             .or_else(|| std::env::var("HOSTNAME").ok())
             .unwrap_or_else(|| "Codex host".into());
         let (events, _) = broadcast::channel(1024);
+        // Test gateways must never create work in the developer's Documents folder.
+        #[cfg(test)]
+        let work_directory = root.join("host-home/Documents/Codex");
+        #[cfg(not(test))]
+        let work_directory = PathBuf::from(
+            std::env::var_os("HOME").ok_or_else(|| error("host home directory is unavailable"))?,
+        )
+        .join("Documents/Codex");
         Ok(Arc::new(Self {
             session_directory: AppPaths::discover()?.sessions_dir(),
             root,
@@ -89,6 +103,8 @@ impl State {
                     "files".into(),
                     "deviceProof".into(),
                     "projects".into(),
+                    "workProjects".into(),
+                    "hostHistory".into(),
                     "hostPeers".into(),
                     "activeTasks".into(),
                     "launcherSettings".into(),
@@ -101,6 +117,10 @@ impl State {
             connections: Arc::new(tokio::sync::Semaphore::new(64)),
             sessions: tokio::sync::Mutex::new(super::sessions::Sessions::default()),
             settings_edits: tokio::sync::Mutex::new(()),
+            work_directory,
+            work_projects: Mutex::new(()),
+            history: Arc::new(Mutex::new(super::history::History::default())),
+            project_opens: tokio::sync::Mutex::new(std::collections::BTreeMap::new()),
             terminals: tokio::sync::Mutex::new(super::terminals::Terminals::default()),
             overlay_status: Mutex::new("starting".into()),
             overlay: Mutex::new(None),

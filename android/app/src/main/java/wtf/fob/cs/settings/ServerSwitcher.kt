@@ -174,7 +174,12 @@ fun ServerSwitcher(
                                         task.chat.text("id")
                                 }
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TaskStatus(if (needsInput) "Needs your input" else "Working", attention = needsInput, active = !needsInput)
+                                val status = chatWorkState(task.chat)
+                                TaskStatus(
+                                    if (needsInput) "Needs your input" else status.label.ifBlank { "Working" },
+                                    attention = needsInput || status.attention,
+                                    active = !needsInput && !status.attention && status != ChatWorkState.Idle,
+                                )
                                 Text(chatTitle(task.chat), style = MaterialTheme.typography.titleMedium)
                                 Text(
                                     "${task.server.name} · ${projectTitle(task.session.getString("cwd"))}",

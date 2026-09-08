@@ -10,6 +10,18 @@ use std::{
 const LABEL_NAMESPACE: &str = "cs.fob.wtf.";
 const LEGACY_LABEL_NAMESPACE: &str = "io.codex-start.";
 
+/// Terminal type and color hints from the current caller.
+pub fn terminal_environment() -> BTreeMap<String, OsString> {
+    ["TERM", "COLORTERM"]
+        .into_iter()
+        .filter_map(|name| {
+            std::env::var_os(name)
+                .filter(|value| !value.is_empty())
+                .map(|value| (name.to_owned(), value))
+        })
+        .collect()
+}
+
 fn legacy_label(value: &str) -> Option<String> {
     value
         .strip_prefix(LABEL_NAMESPACE)
@@ -1053,12 +1065,32 @@ impl Runtime {
         argv: &[OsString],
         tty: bool,
     ) -> Result<u8> {
+        self.exec_as_user(name, workdir, argv, tty, None)
+    }
+
+    /// Run a command as a specific container user, preserving the caller's terminal.
+    pub fn exec_as_user(
+        &self,
+        name: &str,
+        workdir: Option<&Path>,
+        argv: &[OsString],
+        tty: bool,
+        user: Option<&str>,
+    ) -> Result<u8> {
         let mut command = CommandSpec::new(&self.program).args(["exec", "--interactive"]);
         if tty {
             command = command.arg("--tty");
         }
+        if let Some(user) = user {
+            command = command.args(["--user", user]);
+        }
         if let Some(workdir) = workdir {
             command = command.arg("--workdir").arg(workdir.as_os_str());
+        }
+        for (name, value) in terminal_environment() {
+            let mut assignment = OsString::from(format!("{name}="));
+            assignment.push(value);
+            command = command.arg("--env").arg(assignment);
         }
         command = command.arg(name).args(argv.iter().cloned());
         run_interactive(&command)
@@ -1068,6 +1100,15 @@ impl Runtime {
     pub fn exec_probe(&self, name: &str, argv: &[OsString]) -> Result<bool> {
         let command = CommandSpec::new(&self.program)
             .args(["exec", name])
+            .args(argv.iter().cloned())
+            .io(IoMode::Null);
+        Ok(run_capture(&command)?.status.success())
+    }
+
+    /// Probe a user-owned service without using root's home or runtime sockets.
+    pub fn exec_probe_as_user(&self, name: &str, user: &str, argv: &[OsString]) -> Result<bool> {
+        let command = CommandSpec::new(&self.program)
+            .args(["exec", "--user", user, name])
             .args(argv.iter().cloned())
             .io(IoMode::Null);
         Ok(run_capture(&command)?.status.success())
@@ -1250,6 +1291,19 @@ impl Runtime {
         names.sort();
         names.dedup();
         Ok(names)
+    }
+
+    /// Check references from all containers, including stopped containers.
+    pub fn volume_in_use(&self, name: &str) -> Result<bool> {
+        let output = run_checked(&CommandSpec::new(&self.program).args([
+            "ps",
+            "--all",
+            "--filter",
+            &format!("volume={name}"),
+            "--format",
+            "{{.ID}}",
+        ]))?;
+        Ok(!output.stdout_text().is_empty())
     }
 
     /// Remove a named volume when present.

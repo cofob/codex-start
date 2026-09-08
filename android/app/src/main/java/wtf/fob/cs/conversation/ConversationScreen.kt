@@ -3,7 +3,6 @@ package wtf.fob.cs.conversation
 import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.widget.TextView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
@@ -18,17 +17,20 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import io.noties.markwon.Markwon
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -83,7 +85,7 @@ fun conversationItem(item: JSONObject): ConversationItem {
             listOf("summary", "content")
                 .mapNotNull { item.optJSONArray(it) }
                 .joinToString("\n\n") { parts ->
-                    (0 until parts.length()).joinToString("\n") { index ->
+                    (0 until parts.length()).filterNot(parts::isNull).joinToString("\n") { index ->
                         parts.optJSONObject(index)?.text("text") ?: parts.optString(index)
                     }
                 }.ifBlank { item.text("text") }
@@ -104,6 +106,7 @@ fun ConversationScreen(
     setThread: (String) -> Unit,
     action: (String) -> Unit,
 ) {
+    val savedHistory = session.text("kind") == "history"
     var messages by remember(server, session, thread) { mutableStateOf<List<ConversationItem>>(emptyList()) }
     var approvals by remember(server, session) { mutableStateOf(repo.pendingApprovals(server, session.getString("id"))) }
     var input by rememberSaveable(server, session.text("id"), thread, stateSaver = TextFieldValue.Saver) {
@@ -132,6 +135,9 @@ fun ConversationScreen(
     val scope = rememberCoroutineScope()
     val scroll = rememberLazyListState()
     var followLatest by remember(server, session.text("id"), thread) { mutableStateOf(true) }
+    var selectedAnswerId by remember(server, session.text("id"), thread) { mutableStateOf<String?>(null) }
+    val selectingAnswer = selectedAnswerId != null
+    var renderRevision by remember { mutableIntStateOf(0) }
     val userDragging by scroll.interactionSource.collectIsDraggedAsState()
     val showScrollToLatest by remember {
         derivedStateOf { !followLatest && scroll.canScrollForward }
@@ -273,7 +279,7 @@ fun ConversationScreen(
         snapshotFlow { scroll.canScrollForward }
             .distinctUntilChanged()
             .collect { canScrollForward ->
-                if (!canScrollForward) followLatest = true
+                if (!canScrollForward && selectedAnswerId == null && !scroll.isScrollInProgress) followLatest = true
             }
     }
     LaunchedEffect(server, session.text("id"), thread, userDragging) {
@@ -295,16 +301,30 @@ fun ConversationScreen(
         approvals.size,
         accessMessage.length,
         historyError.length,
+        renderRevision,
     ) {
-        if (!historyLoading && followLatest) {
+        if (!historyLoading && followLatest && !selectingAnswer) {
             withFrameNanos { }
-            scrollToLatest()
+            // A touch or native selection can start while waiting for the Markdown layout.
+            if (followLatest && selectedAnswerId == null && !scroll.isScrollInProgress) scrollToLatest()
         }
     }
     LaunchedEffect(server, session, thread) {
+        val deltas = mutableListOf<RemoteEvent>()
+        var deltaSize = 0
+        var publish: Job? = null
+
+        fun flushDeltas() {
+            publish?.cancel()
+            publish = null
+            if (deltas.isNotEmpty()) messages = applyConversationDeltas(messages, deltas)
+            deltas.clear()
+            deltaSize = 0
+        }
         repo.events.collect { event ->
             if (event.server != server) return@collect
             if (event.message.text("method") == "connection/reset") {
+                flushDeltas()
                 recover(true)
                 return@collect
             }
@@ -313,7 +333,23 @@ fun ConversationScreen(
             val message = event.message
             val params = message.optJSONObject("params") ?: return@collect
             if (params.text("threadId").isNotEmpty() && params.text("threadId") != thread) return@collect
-            when (val method = message.text("method")) {
+            if (message.text("method") in CONVERSATION_DELTAS) {
+                deltas.add(event)
+                deltaSize += params.text("delta").length
+                if (deltaSize >= 32 * 1024 || deltas.size >= 256) {
+                    flushDeltas()
+                } else if (publish == null) {
+                    publish =
+                        launch {
+                            delay(32)
+                            flushDeltas()
+                        }
+                }
+                return@collect
+            }
+            // A final item or recovery snapshot must never be followed by stale buffered text.
+            flushDeltas()
+            when (message.text("method")) {
                 "turn/started" -> activeTurn = params.optJSONObject("turn")?.text("id").orEmpty()
                 "turn/completed" -> {
                     activeTurn = ""
@@ -334,36 +370,6 @@ fun ConversationScreen(
                                 },
                             )
                     }
-                "item/agentMessage/delta",
-                "item/reasoning/summaryTextDelta",
-                "item/reasoning/textDelta",
-                "item/commandExecution/outputDelta",
-                "item/plan/delta",
-                -> {
-                    val id = params.text("itemId")
-                    val delta = params.text("delta")
-                    val index = messages.indexOfFirst { it.id == id }
-                    messages =
-                        boundedConversation(
-                            if (index < 0) {
-                                messages + ConversationItem(id, method.split('/')[1], delta)
-                            } else {
-                                messages.toMutableList().apply {
-                                    val previous = get(index)
-                                    set(
-                                        index,
-                                        previous.copy(
-                                            text =
-                                                (
-                                                    previous.text +
-                                                        delta
-                                                ).takeLast(512 * 1024),
-                                        ),
-                                    )
-                                }
-                            },
-                        )
-                }
                 "turn/plan/updated" -> {
                     val id = "plan/${params.text("turnId")}"
                     messages = boundedConversation(messages.filterNot { it.id == id } + ConversationItem(id, "plan", "", params))
@@ -456,9 +462,12 @@ fun ConversationScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(Modifier.weight(1f).then(if (historyLoading) Modifier else Modifier.testTag("conversation-ready"))) {
+                    val needsInput = approvals.any { it.message.optJSONObject("params")?.text("threadId") == thread }
                     TaskStatus(
                         if (historyError.isNotEmpty()) {
                             "History unavailable"
+                        } else if (needsInput) {
+                            "Needs your input"
                         } else if (!canWrite) {
                             "Read only"
                         } else if (activeTurn.isEmpty()) {
@@ -466,10 +475,11 @@ fun ConversationScreen(
                         } else {
                             "Working"
                         },
-                        active = activeTurn.isNotEmpty(),
+                        attention = historyError.isNotEmpty() || needsInput,
+                        active = activeTurn.isNotEmpty() && !needsInput && historyError.isEmpty(),
                     )
                 }
-                if (thread.isNotEmpty()) {
+                if (thread.isNotEmpty() && !savedHistory) {
                     if (canWrite) {
                         TextButton(onClick = { canWrite = false }) { Text("Read only") }
                     } else {
@@ -487,7 +497,7 @@ fun ConversationScreen(
                     Box {
                         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreHoriz, "Task actions") }
                         DropdownMenu(menu, { menu = false }) {
-                            taskActionLabels.forEach { (method, label) ->
+                            taskActionLabels.filter { !savedHistory }.forEach { (method, label) ->
                                 DropdownMenuItem(
                                     enabled =
                                         canWrite ||
@@ -515,7 +525,7 @@ fun ConversationScreen(
                                 menu = false
                                 exportRaw.launch("codex-$thread.jsonl")
                             })
-                            DropdownMenuItem(text = { Text("Agents and subagents") }, onClick = {
+                            DropdownMenuItem(enabled = !savedHistory, text = { Text("Agents and subagents") }, onClick = {
                                 menu = false
                                 showAgents = true
                             })
@@ -674,7 +684,7 @@ fun ConversationScreen(
                                     )
                                 }
                                 Text(
-                                    "What would you like to work on?",
+                                    if (savedHistory) "This saved chat has no messages." else "What would you like to work on?",
                                     Modifier.padding(top = if (compact) 0.dp else 16.dp),
                                     style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
                                 )
@@ -698,7 +708,22 @@ fun ConversationScreen(
                             }
                         } else {
                             val item = block.items.first()
-                            ConversationMessage(item, repo, server, session.getString("id")) {
+                            ConversationMessage(
+                                item,
+                                repo,
+                                server,
+                                session.getString("id"),
+                                streaming = activeTurn.isNotEmpty() && item.id == messages.lastOrNull()?.id,
+                                selectionChanged = { selecting ->
+                                    if (selecting) {
+                                        selectedAnswerId = item.id
+                                    } else if (selectedAnswerId == item.id) {
+                                        selectedAnswerId = null
+                                    }
+                                    if (selecting) followLatest = false
+                                },
+                                rendered = { renderRevision++ },
+                            ) {
                                 context
                                     .getSystemService(
                                         ClipboardManager::class.java,
@@ -731,111 +756,113 @@ fun ConversationScreen(
                 }
             }
             if (busy || historyLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
-            androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(attachments) { attachment ->
-                    InputChip(selected = true, onClick = {
-                        attachments =
-                            attachments.filterNot { it === attachment }
-                    }, label = {
-                        Text(attachment.text("name", attachment.text("path").substringAfterLast('/')), maxLines = 1)
-                    }, trailingIcon = { Icon(Icons.Default.Close, "Remove attachment", Modifier.size(18.dp)) })
+            if (!savedHistory) {
+                androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(attachments) { attachment ->
+                        InputChip(selected = true, onClick = {
+                            attachments =
+                                attachments.filterNot { it === attachment }
+                        }, label = {
+                            Text(attachment.text("name", attachment.text("path").substringAfterLast('/')), maxLines = 1)
+                        }, trailingIcon = { Icon(Icons.Default.Close, "Remove attachment", Modifier.size(18.dp)) })
+                    }
                 }
-            }
-            if (thread.isNotEmpty()) {
-                ConversationQueue(repo, server, writerSession, thread, canWrite, showQueue, { showQueue = true }, { showQueue = false })
-            }
-            ConversationComposer(
-                input,
-                { input = it },
-                enabled = canWrite,
-                compact = compact,
-                placeholder =
-                    if (!canWrite) {
-                        "Enable writing to reply"
-                    } else if (activeTurn.isEmpty()) {
-                        "Message Codex…"
-                    } else if (queueFollowUp) {
-                        "Queue your next instruction…"
-                    } else {
-                        "Steer this turn…"
-                    },
-                modifier =
-                    Modifier.focusRequester(messageFocus).keyboardTabNavigation(focusManager).onPreviewKeyEvent { event ->
-                        if ((event.key == Key.Enter || event.key == Key.NumPadEnter) &&
-                            event.isShiftPressed &&
-                            !event.isCtrlPressed &&
-                            !event.isAltPressed &&
-                            !event.isMetaPressed
-                        ) {
-                            event.runShortcut {
-                                val start = input.selection.min
-                                input = TextFieldValue(input.text.replaceRange(start, input.selection.max, "\n"), TextRange(start + 1))
-                            }
+                if (thread.isNotEmpty()) {
+                    ConversationQueue(repo, server, writerSession, thread, canWrite, showQueue, { showQueue = true }, { showQueue = false })
+                }
+                ConversationComposer(
+                    input,
+                    { input = it },
+                    enabled = canWrite,
+                    compact = compact,
+                    placeholder =
+                        if (!canWrite) {
+                            "Enable writing to reply"
+                        } else if (activeTurn.isEmpty()) {
+                            "Message Codex…"
+                        } else if (queueFollowUp) {
+                            "Queue your next instruction…"
                         } else {
-                            when (event.command()) {
-                                KeyboardCommand.Send -> event.runShortcut { sendMessage() }
-                                KeyboardCommand.Attach ->
-                                    event.runShortcut {
-                                        if (canWrite &&
-                                            !busy &&
-                                            attachments.size < 8
-                                        ) {
-                                            attach.launch(arrayOf("*/*"))
+                            "Steer this turn…"
+                        },
+                    modifier =
+                        Modifier.focusRequester(messageFocus).keyboardTabNavigation(focusManager).onPreviewKeyEvent { event ->
+                            if ((event.key == Key.Enter || event.key == Key.NumPadEnter) &&
+                                event.isShiftPressed &&
+                                !event.isCtrlPressed &&
+                                !event.isAltPressed &&
+                                !event.isMetaPressed
+                            ) {
+                                event.runShortcut {
+                                    val start = input.selection.min
+                                    input = TextFieldValue(input.text.replaceRange(start, input.selection.max, "\n"), TextRange(start + 1))
+                                }
+                            } else {
+                                when (event.command()) {
+                                    KeyboardCommand.Send -> event.runShortcut { sendMessage() }
+                                    KeyboardCommand.Attach ->
+                                        event.runShortcut {
+                                            if (canWrite &&
+                                                !busy &&
+                                                attachments.size < 8
+                                            ) {
+                                                attach.launch(arrayOf("*/*"))
+                                            }
                                         }
-                                    }
-                                else -> false
+                                    else -> false
+                                }
                             }
+                        },
+                    actions = {
+                        if (canWrite &&
+                            activeTurn.isNotEmpty()
+                        ) {
+                            FilledTonalIconButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        repo.rpc(
+                                            server,
+                                            session.getString("id"),
+                                            "turn/interrupt",
+                                            obj(
+                                                "threadId" to thread,
+                                                "turnId" to activeTurn,
+                                            ),
+                                        )
+                                    }.onFailure(repo::report)
+                                }
+                            }) { Icon(Icons.Default.Stop, "Interrupt task", Modifier.size(20.dp)) }
+                        }
+                        FilledIconButton(enabled = canSend, onClick = ::sendMessage) {
+                            Icon(
+                                Icons.Default.ArrowUpward,
+                                if (activeTurn.isEmpty()) {
+                                    "Send message"
+                                } else if (queueFollowUp) {
+                                    "Queue message"
+                                } else {
+                                    "Steer task"
+                                },
+                            )
                         }
                     },
-                actions = {
-                    if (canWrite &&
-                        activeTurn.isNotEmpty()
-                    ) {
-                        FilledTonalIconButton(onClick = {
-                            scope.launch {
-                                runCatching {
-                                    repo.rpc(
-                                        server,
-                                        session.getString("id"),
-                                        "turn/interrupt",
-                                        obj(
-                                            "threadId" to thread,
-                                            "turnId" to activeTurn,
-                                        ),
-                                    )
-                                }.onFailure(repo::report)
-                            }
-                        }) { Icon(Icons.Default.Stop, "Interrupt task", Modifier.size(20.dp)) }
+                ) {
+                    IconButton(onClick = {
+                        attach.launch(arrayOf("*/*"))
+                    }, enabled = canWrite && !busy && attachments.size < 8) { Icon(Icons.Default.Add, "Add attachment") }
+                    IconButton(
+                        enabled = canWrite,
+                        onClick = { configure = true },
+                    ) { Icon(Icons.Default.Tune, "Message options", Modifier.size(20.dp)) }
+                    if (activeTurn.isNotEmpty()) {
+                        TextButton(onClick = {
+                            queueFollowUp = !queueFollowUp
+                        }) { Text(if (queueFollowUp) "Queue" else "Steer", style = MaterialTheme.typography.labelLarge) }
+                    } else if (options.effort.isNotEmpty()) {
+                        Text(humanize(options.effort), style = MaterialTheme.typography.labelMedium)
                     }
-                    FilledIconButton(enabled = canSend, onClick = ::sendMessage) {
-                        Icon(
-                            Icons.Default.ArrowUpward,
-                            if (activeTurn.isEmpty()) {
-                                "Send message"
-                            } else if (queueFollowUp) {
-                                "Queue message"
-                            } else {
-                                "Steer task"
-                            },
-                        )
-                    }
-                },
-            ) {
-                IconButton(onClick = {
-                    attach.launch(arrayOf("*/*"))
-                }, enabled = canWrite && !busy && attachments.size < 8) { Icon(Icons.Default.Add, "Add attachment") }
-                IconButton(
-                    enabled = canWrite,
-                    onClick = { configure = true },
-                ) { Icon(Icons.Default.Tune, "Message options", Modifier.size(20.dp)) }
-                if (activeTurn.isNotEmpty()) {
-                    TextButton(onClick = {
-                        queueFollowUp = !queueFollowUp
-                    }) { Text(if (queueFollowUp) "Queue" else "Steer", style = MaterialTheme.typography.labelLarge) }
-                } else if (options.effort.isNotEmpty()) {
-                    Text(humanize(options.effort), style = MaterialTheme.typography.labelMedium)
+                    if (canWrite && thread.isNotEmpty()) AudioButton(repo, server, session.getString("id"), thread)
                 }
-                if (canWrite && thread.isNotEmpty()) AudioButton(repo, server, session.getString("id"), thread)
             }
             Spacer(Modifier.height(if (compact) 4.dp else 8.dp))
         }
@@ -848,20 +875,21 @@ fun ConversationScreen(
     text: String,
     size: Float = 16f,
     onLongClick: (() -> Unit)? = null,
+    selectable: Boolean = false,
+    selectionChanged: (Boolean) -> Unit = {},
+    rendered: () -> Unit = {},
 ) {
-    val context = LocalContext.current
-    val markwon = remember { Markwon.create(context) }
     val color = MaterialTheme.colorScheme.onSurface
+    val sizePx = with(LocalDensity.current) { size.sp.toPx() }
     AndroidView(factory = {
-        TextView(it).apply {
-            // A selectable TextView consumes vertical drag events before the
-            // Compose message list can use them. The message copy button keeps
-            // full-text copying available without blocking chat scrolling.
-            setTextIsSelectable(false)
-            textSize = size
+        ChatMarkdownView(it).apply {
+            setTextIsSelectable(selectable)
+            setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, sizePx)
         }
-    }, update = {
-        it.textSize = size
+    }, onRelease = { it.close() }, update = {
+        it.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, sizePx)
+        it.selectionChanged = selectionChanged
+        it.renderChanged = rendered
         it.setOnLongClickListener(
             if (onLongClick == null) {
                 null
@@ -872,7 +900,7 @@ fun ConversationScreen(
                 }
             },
         )
-        it.isLongClickable = onLongClick != null
+        it.isLongClickable = selectable || onLongClick != null
         it.setTextColor(
             android.graphics.Color.argb(
                 (color.alpha * 255).toInt(),
@@ -884,6 +912,6 @@ fun ConversationScreen(
                 ).toInt(),
             ),
         )
-        markwon.setMarkdown(it, text.take(512 * 1024))
-    }, modifier = Modifier.fillMaxWidth())
+        it.submit(text.take(512 * 1024))
+    }, modifier = Modifier.fillMaxWidth().clipToBounds())
 }

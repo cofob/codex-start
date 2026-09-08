@@ -7,6 +7,7 @@ network = "allowlist"
 worktree = "auto"
 home = "default"
 tty = "auto"
+tmux = false
 publish = []
 allow_hosts = ["docs.rs"]
 allow_ssh_hosts = ["github.com:22", "ssh.github.com:443"]

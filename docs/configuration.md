@@ -42,6 +42,7 @@ The scalar settings are:
 | `publish` | Port specifications such as `127.0.0.1:8080:80/tcp`; ignored when `network = "host"`. |
 | `rebuild` | Rebuild build-backed environment and sidecar images. |
 | `tty` | `auto`, `always`, or `never`. |
+| `tmux` | `false` by default. Set `true` to start foreground Codex runs in tmux inside the container. `--tmux` enables it for one run; `--no-tmux` disables it for one run. |
 | `workdir` | Absolute container working-directory override. |
 | `allow_hosts` | Additional egress/browser authority rules. |
 | `allow_ssh_hosts` | Host-SSH authority rules; ports default to 22. |

@@ -1,7 +1,6 @@
 package wtf.fob.cs.ui
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -122,7 +121,7 @@ import wtf.fob.cs.workspace.*
     subtitle: String = "",
     open: () -> Unit,
 ) {
-    val active = chat.optJSONObject("status")?.text("type") == "active"
+    val status = chatWorkState(chat)
     Row(Modifier.fillMaxWidth().clickable(onClick = open).padding(vertical = 15.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).padding(end = 12.dp)) {
             Text(chatTitle(chat), style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -135,8 +134,8 @@ import wtf.fob.cs.workspace.*
                 )
             }
         }
-        if (active) {
-            TaskStatus("Working", active = true)
+        if (status.attention || status == ChatWorkState.Running) {
+            TaskStatus(status.label, attention = status.attention, active = status == ChatWorkState.Running)
         } else {
             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.outline)
         }
@@ -148,37 +147,50 @@ import wtf.fob.cs.workspace.*
     repo: RemoteRepository,
     server: String,
     session: String,
+    streaming: Boolean = false,
+    selectionChanged: (Boolean) -> Unit = {},
+    rendered: () -> Unit = {},
     copy: () -> Unit,
 ) {
     val user = item.type == "userMessage"
     val assistant = item.type == "agentMessage"
     var selection by remember(item.id) { mutableStateOf<String?>(null) }
+    var menu by remember(item.id) { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
         if (user) {
             Surface(
                 Modifier.fillMaxWidth(0.88f),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                shape = RoundedCornerShape(22.dp, 22.dp, 5.dp, 22.dp),
+                shape = RoundedCornerShape(22.dp),
             ) {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    if (item.text.isNotEmpty()) Markdown(item.text)
+                    if (item.text.isNotEmpty()) {
+                        Markdown(
+                            item.text,
+                            selectable = true,
+                            selectionChanged = selectionChanged,
+                            rendered = rendered,
+                        )
+                    }
                     item.details?.let { ConversationImages(repo, server, session, it) }
                 }
             }
         } else if (assistant) {
             if (item.text.isNotEmpty()) {
                 Box(
-                    Modifier
-                        .combinedClickable(onClick = {
-                        }, onLongClick = { selection = item.text })
-                        .testTag("agent-answer"),
-                ) { Markdown(item.text, onLongClick = { selection = item.text }) }
+                    Modifier.testTag("agent-answer"),
+                ) { Markdown(item.text, selectable = true, selectionChanged = selectionChanged, rendered = rendered) }
             }
             item.details?.let { ConversationImages(repo, server, session, it) }
         } else {
             ConversationActivity(ConversationBlock(listOf(item)), false) { copy() }
         }
-        if ((user || assistant) && item.text.isNotEmpty()) {
+        if (assistant && streaming) {
+            Row(Modifier.height(28.dp).testTag("answer-streaming"), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Circle, "Receiving answer", Modifier.size(8.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        if ((user || assistant) && item.text.isNotEmpty() && !streaming) {
             Row {
                 IconButton(onClick = copy, Modifier.size(48.dp)) {
                     Icon(
@@ -188,7 +200,34 @@ import wtf.fob.cs.workspace.*
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (assistant) TextButton(onClick = { selection = item.text }) { Text("Select text") }
+                Box {
+                    IconButton(onClick = { menu = true }, Modifier.size(48.dp)) {
+                        Icon(
+                            Icons.Default.MoreHoriz,
+                            "Message actions",
+                            Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Select text") },
+                            leadingIcon = { Icon(Icons.Default.TextFields, null) },
+                            onClick = {
+                                menu = false
+                                selection = item.text
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Copy Markdown") },
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                            onClick = {
+                                menu = false
+                                copy()
+                            },
+                        )
+                    }
+                }
             }
         }
     }

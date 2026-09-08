@@ -43,6 +43,8 @@ Cache scopes are:
 - `environment`: one volume per environment;
 - `run`: a fresh volume removed after the run.
 
+Use `codex-start cache list` to inspect owned cache volumes. `codex-start cache cleanup --dry-run` previews removal, and `codex-start cache cleanup` removes all unused owned volumes with `role=cache` in the selected engine. Both current and legacy ownership labels are supported. Volumes referenced by running or stopped containers are retained. Cleanup does not change volume labels, remove containers, or use forced removal. The existing launcher labels all managed named environment volumes with `role=cache`, so this includes shared state such as GitHub CLI state when its volume is unused. Codex homes and host bind mounts are retained.
+
 Preparation commands are arrays of a program and arguments and never invoke a host shell. They receive resolved secret-reference environment variables from the init helper. Ports default to `127.0.0.1`; use a broader `host_ip` only when the service must be reachable beyond host loopback.
 
 Values in `env`, build arguments, and preparation argv are literal configuration. Known credential-shaped names/assignments are rejected, but arbitrary data cannot be classified reliably; do not place a credential under an innocuous name. Use `secret_refs` for every sensitive value.

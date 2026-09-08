@@ -36,6 +36,75 @@ pub fn add(state: &State, path: &str) -> Result<ProjectInfo> {
     })
 }
 
+/// One private work directory per client operation. Retrying never replaces its files.
+pub async fn create_work_remote(state: &Arc<State>, work_id: &str) -> Result<Value> {
+    let state = state.clone();
+    let id = work_id.to_owned();
+    tokio::task::spawn_blocking(move || create_work(&state, &id).map(|project| json!(project)))
+        .await
+        .map_err(error)?
+}
+
+pub fn create_work(state: &State, work_id: &str) -> Result<ProjectInfo> {
+    let id = uuid::Uuid::parse_str(work_id).map_err(|_| error("workId must be a UUID"))?;
+    let _lock = state
+        .work_projects
+        .lock()
+        .map_err(|_| error("work project lock poisoned"))?;
+    std::fs::create_dir_all(&state.work_directory).map_err(error)?;
+    if std::fs::symlink_metadata(&state.work_directory)
+        .map_err(error)?
+        .file_type()
+        .is_symlink()
+    {
+        return Err(error(
+            "the Codex work directory must not be a symbolic link",
+        ));
+    }
+    let root = std::fs::canonicalize(&state.work_directory).map_err(error)?;
+    let path = root.join(format!("work-{id}"));
+    let projects: Vec<ProjectInfo> = state.db(|store| {
+        Ok(serde_json::from_str(
+            &store.value("projects")?.unwrap_or_else(|| "[]".into()),
+        )?)
+    })?;
+    let existing = projects
+        .iter()
+        .find(|project| std::path::Path::new(&project.path) == path);
+    if existing.is_none() {
+        if projects.len() >= 1024 {
+            return Err(error("project limit reached"));
+        }
+        // create_dir rejects existing files, directories, and symbolic links.
+        std::fs::create_dir(&path).map_err(error)?;
+    } else {
+        let metadata = std::fs::symlink_metadata(&path).map_err(error)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(error("the work project is no longer a directory"));
+        }
+    }
+    let project = add(
+        state,
+        path.to_str()
+            .ok_or_else(|| error("work path is not UTF-8"))?,
+    )?;
+    // Register first: if Git is unavailable, retry can finish setup in the same directory.
+    if !path.join(".git").exists() {
+        let output = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&path)
+            .output()
+            .map_err(error)?;
+        if !output.status.success() {
+            return Err(error(format!(
+                "cannot initialize the work project: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+    }
+    Ok(project)
+}
+
 pub async fn list(state: &Arc<State>) -> Result<Value> {
     for session in super::sessions::list(state).await {
         if session.kind != "job" {
@@ -90,6 +159,20 @@ pub async fn open(state: &Arc<State>, id: &str, profile: Option<&str>) -> Result
     })
     .await
     .map_err(error)??;
+    // An interrupted phone request can retry while its first session is still starting.
+    // Serialize only the same project/profile; unrelated work can start in parallel.
+    let key = serde_json::to_string(&(&project.id, &profile)).map_err(error)?;
+    let lock = {
+        let mut opens = state.project_opens.lock().await;
+        opens.retain(|_, lock| lock.strong_count() > 0);
+        let lock = opens
+            .get(&key)
+            .and_then(std::sync::Weak::upgrade)
+            .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
+        opens.insert(key, Arc::downgrade(&lock));
+        lock
+    };
+    let _opening = lock.lock().await;
     if let Some(session) = super::sessions::list(state)
         .await
         .into_iter()
@@ -181,6 +264,96 @@ pub async fn directories(params: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn work_state(root: &std::path::Path) -> Arc<State> {
+        State::open(
+            root.to_owned(),
+            None,
+            super::super::DaemonOptions::default(),
+            "test".into(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn work_projects_are_separate_git_repositories_and_retries_keep_files() {
+        let root = tempfile::tempdir().unwrap();
+        let state = work_state(root.path());
+        let id = uuid::Uuid::new_v4().to_string();
+        let first = create_work(&state, &id).unwrap();
+        let expected = std::fs::canonicalize(&state.work_directory)
+            .unwrap()
+            .join(format!("work-{id}"));
+        assert_eq!(std::path::Path::new(&first.path), expected);
+        assert!(expected.join(".git").is_dir());
+        std::fs::write(expected.join("notes.txt"), "Keep my work").unwrap();
+        let retry = create_work(&state, &id).unwrap();
+        assert_eq!(first.id, retry.id);
+        assert_eq!(
+            std::fs::read_to_string(expected.join("notes.txt")).unwrap(),
+            "Keep my work"
+        );
+        let second = create_work(&state, &uuid::Uuid::new_v4().to_string()).unwrap();
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.path, second.path);
+    }
+
+    #[test]
+    fn concurrent_work_retries_register_only_one_project() {
+        let root = tempfile::tempdir().unwrap();
+        let state = work_state(root.path());
+        let id = uuid::Uuid::new_v4().to_string();
+        let results = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| create_work(&state, &id).unwrap().id))
+                .collect();
+            threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(results.iter().all(|result| result == &results[0]));
+        assert_eq!(std::fs::read_dir(&state.work_directory).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn work_creation_rejects_paths_and_does_not_adopt_existing_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let state = work_state(root.path());
+        for invalid in ["", "../../outside", "/tmp/work", "not-a-uuid"] {
+            assert!(create_work(&state, invalid).is_err());
+        }
+        assert!(!state.work_directory.exists());
+        let id = uuid::Uuid::new_v4().to_string();
+        let collision = state.work_directory.join(format!("work-{id}"));
+        std::fs::create_dir_all(&collision).unwrap();
+        std::fs::write(collision.join("keep"), "existing data").unwrap();
+        assert!(create_work(&state, &id).is_err());
+        assert_eq!(
+            std::fs::read_to_string(collision.join("keep")).unwrap(),
+            "existing data"
+        );
+        assert!(!collision.join(".git").exists());
+    }
+
+    #[test]
+    fn work_creation_rejects_symbolic_links_and_replaced_projects() {
+        let root = tempfile::tempdir().unwrap();
+        let state = work_state(root.path());
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(state.work_directory.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, &state.work_directory).unwrap();
+        assert!(create_work(&state, &uuid::Uuid::new_v4().to_string()).is_err());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        std::fs::remove_file(&state.work_directory).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let project = create_work(&state, &id).unwrap();
+        std::fs::rename(&project.path, root.path().join("saved-project")).unwrap();
+        std::os::unix::fs::symlink(&outside, &project.path).unwrap();
+        assert!(create_work(&state, &id).is_err());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    }
     #[test]
     fn profile_session_names_remain_distinct_after_name_normalization() {
         let names = [None, Some("work.a"), Some("work-a"), Some("WORK-A")].map(|profile| {

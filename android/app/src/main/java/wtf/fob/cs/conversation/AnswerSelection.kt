@@ -16,7 +16,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import io.noties.markwon.Markwon
 import wtf.fob.cs.ui.NativeSheet
 
-/** Native selection stays outside the chat list so it cannot consume chat drags. */
+/** A separate selection sheet is also available from the message actions menu. */
 @Composable
 fun AnswerSelection(
     text: String,

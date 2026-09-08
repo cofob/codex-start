@@ -34,6 +34,9 @@ On rootless Podman, codex-start automatically maps the Podman service user to th
 # Detect rust/web/uv from project markers, otherwise use generic.
 codex-start run
 
+# Start Codex in tmux inside the container.
+codex-start run --tmux
+
 # Select an environment and pass every following argument to Codex unchanged.
 codex-start run rust -- exec --json "run the tests"
 
@@ -74,6 +77,9 @@ codex-start resources list
 codex-start resources logs RUN_ID
 codex-start resources stop RUN_ID
 codex-start resources cleanup
+codex-start cache list
+codex-start cache cleanup --dry-run
+codex-start cache cleanup
 codex-start session list
 codex-start session attach SESSION
 codex-start session logs SESSION --follow
@@ -89,6 +95,14 @@ Run bare `codex-start session` or `codex-start worktree` in a terminal to open t
 
 `run` uses a foreground container by default. When the workload exits, the container, sidecar, run networks, and temporary cache volumes are removed. Newly created worktrees with no changes or new commits are also removed with their owned branches. Worktrees with changes, Codex homes, and persistent caches remain. Set `settings.git.cleanup_untouched = false` to keep all worktrees. Use `--persistent` or `settings.sessions.enabled = true` to keep a managed session. In that mode, a bare interactive run keeps a Codex app-server in the workload and reconnects TUI clients to it; an explicit command after `--` runs as a managed background job. Closing the client terminal does not stop a persistent session. Use `--ephemeral` to override persistent settings for one run.
 
+Tmux is disabled by default. Use `codex-start run --tmux` or `codex-start --tmux` to open Codex in a tmux session inside the container. Put Codex arguments after `--`, for example `codex-start run --tmux -- resume`. The built-in images include tmux; custom images must supply it.
+
+To enable tmux for all foreground Codex runs, use `codex-start config set --global tmux true`, or set `tmux = true` under `[settings]` in the global config. Project and profile settings also support this key. `CODEX_START__TMUX=true` overrides file settings. Use `codex-start --no-tmux` or `codex-start run --no-tmux` to disable tmux for one run. The CLI flags take priority over all config layers and cannot be used together.
+
+In tmux mode, the launcher first tries to attach to the existing `codex` tmux session in a compatible running container. `--name NAME` selects the named worktree/container. Without a name, one matching session is reused; multiple matches require `--name`. Matching checks the project, environment, Codex home, network mode, and ownership labels. Attachment uses the Codex container user and the caller's current terminal settings. It does not create a worktree, pull an image, restart Codex, or detach other tmux clients. Codex arguments apply only when a new session starts. `--pull` and `--rebuild` bypass reconnection. A stopped container cannot retain a live tmux session. Detaching a reconnected client leaves the original client running; the original foreground client's exit still ends the container.
+
+Tmux requires a terminal and overrides `settings.sessions.enabled` for foreground runs. Shells, adapters, merge jobs, and explicit persistent sessions ignore the tmux default. Explicit `--tmux` cannot be combined with `--persistent`, `session start`, `shell`, or `--no-tty`. Use the normal tmux keys to open windows and split panes. The foreground container ends when the tmux client exits, including when you detach with `Ctrl-b d`; this mode does not keep a background session. The launcher returns the tmux client exit status.
+
 Persistent sessions force the authenticated SSH-agent relay so `session attach` and `session refresh` can retarget new connections to the caller's current `SSH_AUTH_SOCK`. The container-side socket remains stable. Normal TUI exit prompts to detach or stop; terminal loss detaches implicitly.
 
 `codex-start shell --name NAME` attaches to the named workload when it is running. If its interactive session was stopped, it restores the session's workload and sidecars first; if the workload no longer exists, it creates a new one.
@@ -100,6 +114,10 @@ Cross-reboot recovery is opt-in. `session recovery enable` installs a user launc
 `merge` requires a clean, attached current branch and clean named source worktrees. Each source first resolves as an exact local branch and otherwise as a codex-start-managed worktree name. Codex merges sources in argument order, resolves conflicts, repairs integration failures, runs relevant checks, and must leave committed clean history. Failed or blocked runs preserve the repository for inspection; codex-start never resets or aborts it automatically.
 
 Migration aliases from pi-start are accepted, including `--commit`, `--squash`, `--move`, `--edit`, `--shell`, `--cleanup`, `--cleanup-git`, and `--no-network`. The last is a deprecated name for allowlist mode; `--offline` means no egress. In positional compatibility mode, a first value matching a loaded environment selects it and the remainder is passed to Codex; when it does not match an environment, all values are passed to Codex with the configured or detected environment.
+
+`cache list` shows owned volumes with `role=cache` and whether a container uses them. `cache cleanup --dry-run` lists the unused cache volumes that would be removed. `cache cleanup` removes those volumes across all projects in the selected engine. Use `cache --runtime docker cleanup` or `cache --runtime podman cleanup` to select an engine. Both the `cs.fob.wtf` and legacy `io.codex-start` label namespaces are supported. Cleanup checks `managed=true` and `role=cache`, skips volumes referenced by running or stopped containers, and never stops containers or forces removal. Removal failures produce a nonzero exit status. `--output json` provides volume names and cleanup results for scripts. Homes and bind mounts are not removed. Named environment volumes with the existing cache role are eligible, including shared state; use the dry run to inspect them.
+
+The launcher forwards non-empty host `TERM` and `COLORTERM` values to new containers and to shell or TUI clients attached to existing containers. An attached client uses the current caller's values. When a value is absent or empty, the container keeps its default. In tmux mode, tmux receives the host terminal type and sets the terminal type for its own panes.
 
 ## Desktop and VS Code
 
