@@ -27,11 +27,11 @@ jobs:
             target: google_apis_ps16k
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.88.0
@@ -39,7 +39,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: android-${{ matrix.api }}
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Install pinned Android tools
         run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;28.2.13676358'
       - name: Check baseline map
@@ -65,7 +65,7 @@ jobs:
             ./android/gradlew -p android connectedDebugAndroidTest
             python3 scripts/test-android-remote.py --serial emulator-5554 --direct
             python3 scripts/test-android-background.py --serial emulator-5554 --doze
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: android-${{ matrix.api }}-${{ matrix.target }}-reports
