@@ -50,7 +50,7 @@ zip.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 portable-pty = "=0.9.0"
-nix = { version = "0.30", features = ["signal", "process"] }
+nix = { version = "0.31", features = ["signal", "process"] }
 codex-start-remote = { version = "0.2.0-rc.1", path = "../codex-start-remote" }
 codex-start-transport = { version = "0.2.0-rc.1", path = "../codex-start-transport" }
 axum.workspace = true
