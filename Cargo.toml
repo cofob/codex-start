@@ -58,7 +58,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 url = { version = "2.5", features = ["serde"] }
 uuid = { version = "=1.16.0", features = ["serde", "v4"] }
 walkdir = "2.5"
-zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.0", default-features = false, features = ["deflate-flate2"] }
 zeroize = { version = "1.8", features = ["derive"] }
 axum = { version = "=0.8.1", features = ["ws"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
